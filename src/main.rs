@@ -6,10 +6,11 @@
 #![feature(asm_experimental_arch)]
 
 use core::{ptr, f32::consts::PI};
-use bevy_ecs::query::With;
+use alloc::vec;
+use bevy_ecs::query::{With, WorldQuery};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::{IntoScheduleConfigs, Schedule};
-use bevy_ecs::system::{Query, Res, ResMut, Single};
+use bevy_ecs::system::{Commands, Query, Res, ResMut, Single};
 use bevy_ecs::world::World;
 use psp::Align16;
 use psp::sys::{
@@ -212,50 +213,49 @@ fn init_textures() {
     CELL_BRICK_TEXTURE.call_once(||unsafe { load_png_swizzled(include_bytes!("../assets/cell_brick.png")).expect("Bad PNG") });
 }
 
-unsafe fn init_Gu() {
-    psp::enable_home_button();
+fn init_Gu() {
+    unsafe {
+        psp::enable_home_button();
 
-    let allocator = get_vram_allocator().unwrap();
-    let fbp0 = allocator.alloc_texture_pixels(BUF_WIDTH, SCREEN_HEIGHT, TexturePixelFormat::Psm8888);
-    let fbp1 = allocator.alloc_texture_pixels(BUF_WIDTH, SCREEN_HEIGHT, TexturePixelFormat::Psm8888);
-    let zbp = allocator.alloc_texture_pixels(BUF_WIDTH, SCREEN_HEIGHT, TexturePixelFormat::Psm4444);
-    // Attempting to free the three VRAM chunks at this point would give a
-    // compile-time error since fbp0, fbp1 and zbp are used later on
-    //allocator.free_all();
-    
+        let allocator = get_vram_allocator().unwrap();
+        let fbp0 = allocator.alloc_texture_pixels(BUF_WIDTH, SCREEN_HEIGHT, TexturePixelFormat::Psm8888);
+        let fbp1 = allocator.alloc_texture_pixels(BUF_WIDTH, SCREEN_HEIGHT, TexturePixelFormat::Psm8888);
+        let zbp = allocator.alloc_texture_pixels(BUF_WIDTH, SCREEN_HEIGHT, TexturePixelFormat::Psm4444);
+        // Attempting to free the three VRAM chunks at this point would give a
+        // compile-time error since fbp0, fbp1 and zbp are used later on
+        //allocator.free_all();
+        
 
-    // Load identity matrix into Gu
-    sys::sceGumLoadIdentity();
+        // Load identity matrix into Gu
+        sys::sceGumLoadIdentity();
 
-    // Initialize Gu
-    sys::sceGuInit();
+        // Initialize Gu
+        sys::sceGuInit();
 
-    // Setup Gu for 3d
-    sys::sceGuStart(GuContextType::Direct, &raw mut LIST.0 as *mut [u32; 0x40000] as *mut _);
-    sys::sceGuDrawBuffer(DisplayPixelFormat::Psm8888, fbp0.as_mut_ptr_from_zero() as _, BUF_WIDTH as i32);
-    sys::sceGuDispBuffer(SCREEN_WIDTH as i32, SCREEN_HEIGHT as i32, fbp1.as_mut_ptr_from_zero() as _, BUF_WIDTH as i32);
-    sys::sceGuDepthBuffer(zbp.as_mut_ptr_from_zero() as _, BUF_WIDTH as i32);
-    sys::sceGuOffset(2048 - (SCREEN_WIDTH / 2), 2048 - (SCREEN_HEIGHT / 2));
-    sys::sceGuViewport(2048, 2048, SCREEN_WIDTH as i32, SCREEN_HEIGHT as i32);
-    sys::sceGuDepthRange(65535, 0);
-    sys::sceGuScissor(0, 0, SCREEN_WIDTH as i32, SCREEN_HEIGHT as i32);
-    sys::sceGuEnable(GuState::ScissorTest);
-    sys::sceGuDepthFunc(DepthFunc::GreaterOrEqual);
-    sys::sceGuEnable(GuState::DepthTest);
-    sys::sceGuFrontFace(FrontFaceDirection::Clockwise);
-    sys::sceGuShadeModel(ShadingModel::Smooth);
-    sys::sceGuEnable(GuState::CullFace);
-    sys::sceGuEnable(GuState::Texture2D);
-    sys::sceGuEnable(GuState::ClipPlanes);
-    sys::sceGuFinish();
-    sys::sceGuSync(GuSyncMode::Finish, GuSyncBehavior::Wait);
+        // Setup Gu for 3d
+        sys::sceGuStart(GuContextType::Direct, &raw mut LIST.0 as *mut [u32; 0x40000] as *mut _);
+        sys::sceGuDrawBuffer(DisplayPixelFormat::Psm8888, fbp0.as_mut_ptr_from_zero() as _, BUF_WIDTH as i32);
+        sys::sceGuDispBuffer(SCREEN_WIDTH as i32, SCREEN_HEIGHT as i32, fbp1.as_mut_ptr_from_zero() as _, BUF_WIDTH as i32);
+        sys::sceGuDepthBuffer(zbp.as_mut_ptr_from_zero() as _, BUF_WIDTH as i32);
+        sys::sceGuOffset(2048 - (SCREEN_WIDTH / 2), 2048 - (SCREEN_HEIGHT / 2));
+        sys::sceGuViewport(2048, 2048, SCREEN_WIDTH as i32, SCREEN_HEIGHT as i32);
+        sys::sceGuDepthRange(65535, 0);
+        sys::sceGuScissor(0, 0, SCREEN_WIDTH as i32, SCREEN_HEIGHT as i32);
+        sys::sceGuEnable(GuState::ScissorTest);
+        sys::sceGuDepthFunc(DepthFunc::Greater);
+        sys::sceGuEnable(GuState::DepthTest);
+        sys::sceGuShadeModel(ShadingModel::Smooth);
+        sys::sceGuEnable(GuState::CullFace);
+        sys::sceGuFrontFace(FrontFaceDirection::Clockwise);
+        sys::sceGuEnable(GuState::Texture2D);
+        sys::sceGuEnable(GuState::ClipPlanes);
+        sys::sceGuFinish();
+        sys::sceGuSync(GuSyncMode::Finish, GuSyncBehavior::Wait);
 
-    psp::sys::sceDisplayWaitVblankStart();
+        psp::sys::sceDisplayWaitVblankStart();
 
-    sys::sceGuDisplay(true);
-    
-    // Load assets
-    init_textures();
+        sys::sceGuDisplay(true);
+    }
 }
 
 fn clear_screen() {
@@ -271,11 +271,14 @@ fn clear_screen() {
 fn draw_world(query: Query<(&Mesh, &Transform)>) {
     unsafe {
         
-        // setup matrices for cube
+        // Setup matrices for rendering
         sys::sceGumMatrixMode(sys::MatrixMode::Projection);
         sys::sceGumLoadIdentity();
-        sys::sceGumPerspective(75.0, 16.0 / 9.0, 0.5, 1000.0);
+        // Fov, Aspect Ration, Near clipping field, far clipping field
+        sys::sceGumPerspective(90.0, 16.0 / 9.0, 0.50, 40.0);
 
+        // Have set load the identity matrix into the model matrix so that the model we spawn isn't
+        // at some "random" orientation/permutation
         sys::sceGumMatrixMode(sys::MatrixMode::Model);
         sys::sceGumLoadIdentity();
 
@@ -290,7 +293,9 @@ fn draw_world(query: Query<(&Mesh, &Transform)>) {
         sys::sceGuTexFilter(TextureFilter::Linear, TextureFilter::Linear); // Texture filtering
         sys::sceGuTexScale(1.0, 1.0); // Texture scale
         sys::sceGuTexOffset(0.0, 0.0); // Texture offset
- 
+        
+        let vertex_type = &mut (VertexType::TEXTURE_32BITF | VertexType::VERTEX_32BITF | VertexType::TRANSFORM_3D);
+        
         for (mesh, transform) in query.iter() {
             
             sys::sceGumMatrixMode(sys::MatrixMode::Model);
@@ -299,17 +304,47 @@ fn draw_world(query: Query<(&Mesh, &Transform)>) {
             sys::sceGumTranslate(&transform.translation);
             sys::sceGumRotateXYZ(&transform.rotation);
             
+            // See if mesh was created with indices or full vertex descriptions
+            let ind = match &mesh.indices {
+                // If it was created with indices, use them
+                Some(p) => {
+                    vertex_type.set(VertexType::INDEX_16BIT, true);
+                    p.as_ptr() as *const _
+                },
+                // Else, make sure we unset the bit value
+                None => {
+                    vertex_type.set(VertexType::INDEX_16BIT, false);
+                    ptr::null_mut()
+                }
+            };
+            
             // draw cube
             sys::sceGumDrawArray(
                 GuPrimitive::Triangles,
-                VertexType::TEXTURE_32BITF | VertexType::VERTEX_32BITF | VertexType::TRANSFORM_3D,
+                VertexType::from_bits_retain(vertex_type.bits()),
                 mesh.vertices.len() as i32,
-                ptr::null_mut(),
+                ind,
                 mesh.vertices.as_ptr() as *const _
             );
             
         }
 
+    }
+}
+
+fn setup_gu() {
+    unsafe { sys::sceGuStart(GuContextType::Direct, &raw mut LIST.0 as *mut [u32; 0x40000] as *mut _) };
+}
+
+fn finish_gu() {
+    unsafe {
+        sys::sceGuFinish();
+        sys::sceGuSync(GuSyncMode::Finish, GuSyncBehavior::Wait);
+
+//         sys::sceGuDebugFlush();
+
+        sys::sceDisplayWaitVblankStart();
+        sys::sceGuSwapBuffers();
     }
 }
 
@@ -321,20 +356,35 @@ unsafe fn psp_main_inner() {
     world.insert_resource(Controller::default());
 
     // Create schedule
+    let mut startup_schedule = Schedule::default();
     let mut update_schedule = Schedule::default();
     let mut render_schedule = Schedule::default();
+
+    // Functions to only be run once
+    startup_schedule.add_systems(
+        (
+            init_Gu,
+            init_textures.after(init_Gu),
+        )
+    );
+    
+    // Functions that are separate to render functions that will run in primary context (before
+    // Gu context swap
     update_schedule.add_systems(
         (
             update_time,
             update_controls, 
-            update_player,
+            update_player.after(update_controls),
         )
     );
 
+    // Functions that are used to render anything to the screen or affect the execution context
     render_schedule.add_systems(
         (
+            setup_gu.before(clear_screen),
             clear_screen,
-            draw_world.after(clear_screen)
+            draw_world.after(clear_screen),
+            finish_gu.after(draw_world)
         )
     );
 
@@ -344,36 +394,31 @@ unsafe fn psp_main_inner() {
         Transform::default(),
     ));
 
-    world.spawn((
-        Mesh::cube(1.0),
-        Transform::from_xyz(0.0, 0.0, -2.0),
-    ));
-
-    world.spawn((
-        Mesh::cuboid(0.5, 2.0, 3.0),
-        Transform::from_xyz(3.0, 0.5, -2.0).with_rotation(0.0, PI/2.0, 0.0),
-    ));
-
-    // Initialize the psp Gu system
-    init_Gu();
+    // Spawn world objects
+    world.spawn_batch(vec![
+        (
+            Mesh::cube_indexed(1.0),
+            Transform::from_xyz(0.0, 0.0, -2.0),
+        ),
+        (
+            Mesh::cuboid(0.5, 2.0, 3.0),
+            Transform::from_xyz(3.0, 0.5, -2.0).with_rotation(0.0, PI/2.0, 0.0),
+        ),
+        (
+            Mesh::plane(10.0, 10.0),
+            Transform::from_xyz(0.0, -0.5, -0.0).with_rotation(-PI/2.0, 0.0, 0.0),
+        )
+    ]);
+    
+    // Run startup functions
+    startup_schedule.run(&mut world);
 
     // Main game loop
     loop {
-        // This updated game logic 
+        // This updates game logic 
         update_schedule.run(&mut world);
-        
-        sys::sceGuStart(GuContextType::Direct, &raw mut LIST.0 as *mut [u32; 0x40000] as *mut _);
-        
 
         render_schedule.run(&mut world);
-        
-        sys::sceGuFinish();
-        sys::sceGuSync(GuSyncMode::Finish, GuSyncBehavior::Wait);
-
-//         sys::sceGuDebugFlush();
-
-        sys::sceDisplayWaitVblankStart();
-        sys::sceGuSwapBuffers();
     }
 
     // psp::sys::sceKernelExitGame();
