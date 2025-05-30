@@ -22,6 +22,7 @@ use bevy_ecs::component;
 
 extern crate alloc;
 
+use psp_assets::{AssetServer, Image};
 use psp_geometry::Mesh;
 use spin::Once;
 
@@ -31,12 +32,14 @@ mod psp_input;
 mod psp_print;
 mod psp_math;
 mod psp_text;
-use psp_image::load_png_swizzled;
+mod psp_assets;
+use psp_image::{load_png, load_png_swizzled};
 
 psp::module!("ESO", 1, 1);
 
 static mut LIST: Align16<[u32; 0x40000]> = Align16([0; 0x40000]);
 static CELL_BRICK_TEXTURE: Once<(u32, u32, usize, alloc::boxed::Box<[u8]>)> = Once::new();
+static DEFAULT_FONT_TEXTURE: Once<(u32, u32, usize, alloc::boxed::Box<[u8]>)> = Once::new();
 
 // Game constants
 const PLAYER_SPEED: f32 = 2.5;
@@ -209,10 +212,16 @@ fn update_player(mut transform: Single<&mut Transform, With<Player>>, time: Res<
  
 
 
-fn init_textures() {
+fn init_textures(mut asset_server: ResMut<AssetServer>) {
     CELL_BRICK_TEXTURE.call_once(||unsafe { load_png_swizzled(include_bytes!("../assets/cell_brick.png")).expect("Bad PNG") });
+    DEFAULT_FONT_TEXTURE.call_once(|| unsafe { load_png(include_bytes!("../assets/default_font.png")).expect("Could not load font")});
+    
+    let image = Image::new("../assets/cell_brick.png");
+
+    asset_server.add(image);
 }
 
+#[allow(non_snake_case)]
 fn init_Gu() {
     unsafe {
         psp::enable_home_button();
@@ -268,8 +277,10 @@ fn clear_screen() {
 }
 
 
-fn draw_world(query: Query<(&Mesh, &Transform)>) {
+fn draw_world(asset_server: Res<AssetServer>, query: Query<(&Mesh, &Transform)>) {
     unsafe {
+
+        println!("{}", asset_server.check_references("cell_brick.png"));
         
         // Setup matrices for rendering
         sys::sceGumMatrixMode(sys::MatrixMode::Projection);
@@ -317,10 +328,10 @@ fn draw_world(query: Query<(&Mesh, &Transform)>) {
                     ptr::null_mut()
                 }
             };
-            
+
             // draw cube
             sys::sceGumDrawArray(
-                GuPrimitive::Triangles,
+                mesh.primitive_type,
                 VertexType::from_bits_retain(vertex_type.bits()),
                 mesh.vertices.len() as i32,
                 ind,
@@ -341,11 +352,17 @@ fn finish_gu() {
         sys::sceGuFinish();
         sys::sceGuSync(GuSyncMode::Finish, GuSyncBehavior::Wait);
 
-//         sys::sceGuDebugFlush();
+        sys::sceGuDebugFlush();
 
         sys::sceDisplayWaitVblankStart();
         sys::sceGuSwapBuffers();
     }
+}
+
+fn load_assets(
+    mut asset_server: ResMut<AssetServer>
+) {
+
 }
 
 unsafe fn psp_main_inner() {
@@ -354,6 +371,7 @@ unsafe fn psp_main_inner() {
     let mut world = World::new();
     world.insert_resource(Time::default());
     world.insert_resource(Controller::default());
+    world.insert_resource(AssetServer::default());
 
     // Create schedule
     let mut startup_schedule = Schedule::default();
@@ -405,9 +423,9 @@ unsafe fn psp_main_inner() {
             Transform::from_xyz(3.0, 0.5, -2.0).with_rotation(0.0, PI/2.0, 0.0),
         ),
         (
-            Mesh::plane(10.0, 10.0),
+            Mesh::subdivided_plane(10.0, 10.0, 2, 2),
             Transform::from_xyz(0.0, -0.5, -0.0).with_rotation(-PI/2.0, 0.0, 0.0),
-        )
+        ),
     ]);
     
     // Run startup functions

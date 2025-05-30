@@ -1,4 +1,15 @@
-use psp;
+use psp::{self, sys::{sceKernelUtilsMt19937Init, sceKernelUtilsMt19937UInt, sceRtcGetCurrentTick, SceKernelUtilsMt19937Context}};
+
+pub fn rand() -> u32 {
+    unsafe {
+        let mut ctx = SceKernelUtilsMt19937Context { count: 0, state: [0; 624] };
+        let mut tick = 0u64;
+        
+        sceRtcGetCurrentTick(&mut tick);
+        sceKernelUtilsMt19937Init(&mut ctx, tick as u32);
+        sceKernelUtilsMt19937UInt(&mut ctx)
+    }
+}
 
 /// Calculate the cosine of an angle using the psp VFPU
 pub fn vfpu_cosf(x: f32) -> f32 {
