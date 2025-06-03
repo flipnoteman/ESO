@@ -6,7 +6,8 @@
 #![feature(asm_experimental_arch)]
 
 use core::{ptr, f32::consts::PI};
-use alloc::vec;
+use alloc::sync::Arc;
+use alloc::{format, vec};
 use bevy_ecs::query::{With, WorldQuery};
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::{IntoScheduleConfigs, Schedule};
@@ -22,8 +23,8 @@ use bevy_ecs::component;
 
 extern crate alloc;
 
-use psp_assets::{AssetServer, Image};
-use psp_geometry::Mesh;
+use psp_assets::{Asset, AssetServer, Image};
+use psp_geometry::{Material, Mesh};
 use spin::Once;
 
 mod psp_image;
@@ -212,14 +213,11 @@ fn update_player(mut transform: Single<&mut Transform, With<Player>>, time: Res<
  
 
 
-fn init_textures(mut asset_server: ResMut<AssetServer>) {
-    CELL_BRICK_TEXTURE.call_once(||unsafe { load_png_swizzled(include_bytes!("../assets/cell_brick.png")).expect("Bad PNG") });
-    DEFAULT_FONT_TEXTURE.call_once(|| unsafe { load_png(include_bytes!("../assets/default_font.png")).expect("Could not load font")});
-    
-    let image = Image::new("../assets/cell_brick.png");
-
-    asset_server.add(image);
-}
+// fn init_textures(mut asset_server: ResMut<AssetServer>) {
+//     CELL_BRICK_TEXTURE.call_once(||unsafe { load_png_swizzled(include_bytes!("../assets/cell_brick.png")).expect("Bad PNG") });
+//     DEFAULT_FONT_TEXTURE.call_once(|| unsafe { load_png(include_bytes!("../assets/default_font.png")).expect("Could not load font")});
+// 
+// }
 
 #[allow(non_snake_case)]
 fn init_Gu() {
@@ -277,10 +275,8 @@ fn clear_screen() {
 }
 
 
-fn draw_world(asset_server: Res<AssetServer>, query: Query<(&Mesh, &Transform)>) {
+fn draw_world(asset_server: Res<AssetServer>, query: Query<(&Mesh, &Transform, &Material)>) {
     unsafe {
-
-        println!("{}", asset_server.check_references("cell_brick.png"));
         
         // Setup matrices for rendering
         sys::sceGumMatrixMode(sys::MatrixMode::Projection);
@@ -294,20 +290,28 @@ fn draw_world(asset_server: Res<AssetServer>, query: Query<(&Mesh, &Transform)>)
         sys::sceGumLoadIdentity();
 
 
-        let (w, h, pitch_px, tex) = &CELL_BRICK_TEXTURE.wait();
+//         let (w, h, pitch_px, tex) = &CELL_BRICK_TEXTURE.wait();
+        
 
-        // Setup Texture
-        // Textures need to be swizzled
-        sys::sceGuTexMode(TexturePixelFormat::Psm8888, 0, 0, 1);
-        sys::sceGuTexImage(MipmapLevel::None, *w as i32, *h as i32, *pitch_px as i32, tex.as_ptr() as *const _ );
-        sys::sceGuTexFunc(TextureEffect::Replace, TextureColorComponent::Rgb); // Texture Function
-        sys::sceGuTexFilter(TextureFilter::Linear, TextureFilter::Linear); // Texture filtering
-        sys::sceGuTexScale(1.0, 1.0); // Texture scale
-        sys::sceGuTexOffset(0.0, 0.0); // Texture offset
         
-        let vertex_type = &mut (VertexType::TEXTURE_32BITF | VertexType::VERTEX_32BITF | VertexType::TRANSFORM_3D);
-        
-        for (mesh, transform) in query.iter() {
+        for (mesh, transform, material) in query.iter() {
+            
+            let handle = material.handle.as_ref().unwrap().upgrade().unwrap();
+            
+            let w = handle.width();
+            let h = handle.height();
+            let pitch_px = handle.pitch();
+            
+            // Setup Texture
+            // Textures need to be swizzled
+            sys::sceGuTexMode(TexturePixelFormat::Psm8888, 0, 0, 1);
+            sys::sceGuTexImage(MipmapLevel::None, w as i32, h as i32, pitch_px as i32, handle.raw_bytes());
+            sys::sceGuTexFunc(TextureEffect::Replace, TextureColorComponent::Rgb); // Texture Function
+            sys::sceGuTexFilter(TextureFilter::Linear, TextureFilter::Linear); // Texture filtering
+            sys::sceGuTexScale(1.0, 1.0); // Texture scale
+            sys::sceGuTexOffset(0.0, 0.0); // Texture offset
+            
+            let vertex_type = &mut (VertexType::TEXTURE_32BITF | VertexType::VERTEX_32BITF | VertexType::TRANSFORM_3D);
             
             sys::sceGumMatrixMode(sys::MatrixMode::Model);
             sys::sceGumLoadIdentity();
@@ -359,10 +363,42 @@ fn finish_gu() {
     }
 }
 
-fn load_assets(
-    mut asset_server: ResMut<AssetServer>
+fn setup_world(
+    world: &mut World,
 ) {
 
+    let mut asset_server = world.resource_mut::<AssetServer>();
+
+    let brick_path = "ms0:/psp/game/cat_dev/eso/assets/cell_brick.png";
+    let image = Image::new(brick_path);
+    let brick_handle = asset_server.add(image).expect(format!("Could not add image: {}", brick_path).as_str());
+     
+    // Spawn components and entities
+    world.spawn((
+        Player, 
+        Transform::default(),
+    ));
+    
+    let brick_material = Material::new(&brick_handle, TexturePixelFormat::Psm8888, true);
+    
+    // Spawn world objects
+    world.spawn_batch(vec![
+        (
+            Mesh::cube_indexed(1.0),
+            Transform::from_xyz(0.0, 0.0, -2.0),
+            brick_material.clone() // Should only clone a weak handle to the texture
+        ),
+        (
+            Mesh::cuboid(0.5, 2.0, 3.0),
+            Transform::from_xyz(3.0, 0.5, -2.0).with_rotation(0.0, PI/2.0, 0.0),
+            brick_material.clone()
+        ),
+        (
+            Mesh::subdivided_plane(10.0, 10.0, 2, 2),
+            Transform::from_xyz(0.0, -0.5, -0.0).with_rotation(-PI/2.0, 0.0, 0.0),
+            brick_material
+        ),
+    ]);
 }
 
 unsafe fn psp_main_inner() {
@@ -381,8 +417,9 @@ unsafe fn psp_main_inner() {
     // Functions to only be run once
     startup_schedule.add_systems(
         (
-            init_Gu,
-            init_textures.after(init_Gu),
+            setup_world,
+            init_Gu.after(setup_world),
+//             init_textures.after(init_Gu),
         )
     );
     
@@ -406,27 +443,6 @@ unsafe fn psp_main_inner() {
         )
     );
 
-    // Spawn components and entities
-    world.spawn((
-        Player, 
-        Transform::default(),
-    ));
-
-    // Spawn world objects
-    world.spawn_batch(vec![
-        (
-            Mesh::cube_indexed(1.0),
-            Transform::from_xyz(0.0, 0.0, -2.0),
-        ),
-        (
-            Mesh::cuboid(0.5, 2.0, 3.0),
-            Transform::from_xyz(3.0, 0.5, -2.0).with_rotation(0.0, PI/2.0, 0.0),
-        ),
-        (
-            Mesh::subdivided_plane(10.0, 10.0, 2, 2),
-            Transform::from_xyz(0.0, -0.5, -0.0).with_rotation(-PI/2.0, 0.0, 0.0),
-        ),
-    ]);
     
     // Run startup functions
     startup_schedule.run(&mut world);

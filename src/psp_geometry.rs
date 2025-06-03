@@ -1,9 +1,9 @@
 use aligned_vec::{AVec, ConstAlign, avec};
-use alloc::{boxed::Box, string::String};
+use alloc::{boxed::Box, string::String, sync::{Arc, Weak}};
 use bevy_ecs::component::Component;
 use psp::sys::{GuPrimitive, TexturePixelFormat};
 
-use crate::psp_image::load_png_swizzled;
+use crate::{psp_assets::TextureHandle, psp_image::load_png_swizzled};
 
 #[repr(C, align(4))]
 #[derive(Clone, Copy)]
@@ -16,34 +16,34 @@ pub struct Vertex {
 }
 
 #[repr(C, align(4))]
-#[derive(Component)]
+#[derive(Clone, Component)]
 pub struct Material {
-    pub handle: Box<[u8]>,
+    pub handle: Option<Weak<TextureHandle>>,
     pub texture_format: TexturePixelFormat,
     pub swizzle: bool,
-    pub width: usize,
-    pub height: usize,
-    pub tbw: usize,
+
 }
 
 impl Default for Material {
     fn default() -> Self {
         Material {
-            handle: Box::default(),
+            handle: None,
             texture_format: TexturePixelFormat::PsmT4,
             swizzle: false,
-            width: 0,
-            height: 0,
-            tbw: 0,
+        }
+    }
+}
+
+impl Material {
+    pub fn new(handle: &Arc<TextureHandle>, texture_format: TexturePixelFormat, swizzle: bool) -> Self {
+        Material {
+            handle: Some(Arc::downgrade(handle)),
+            texture_format,
+            swizzle
         }
     }
 
 }
-
-impl Material {
-
-}
-
 #[repr(C, align(4))]
 #[derive(Component)]
 pub struct Mesh {
