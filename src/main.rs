@@ -39,8 +39,6 @@ use psp_image::{load_png, load_png_swizzled};
 psp::module!("ESO", 1, 1);
 
 static mut LIST: Align16<[u32; 0x40000]> = Align16([0; 0x40000]);
-static CELL_BRICK_TEXTURE: Once<(u32, u32, usize, alloc::boxed::Box<[u8]>)> = Once::new();
-static DEFAULT_FONT_TEXTURE: Once<(u32, u32, usize, alloc::boxed::Box<[u8]>)> = Once::new();
 
 // Game constants
 const PLAYER_SPEED: f32 = 2.5;
@@ -275,7 +273,7 @@ fn clear_screen() {
 }
 
 
-fn draw_world(asset_server: Res<AssetServer>, query: Query<(&Mesh, &Transform, &Material)>) {
+fn render_world(query: Query<(&Mesh, &Transform, &Material)>) {
     unsafe {
         
         // Setup matrices for rendering
@@ -293,28 +291,34 @@ fn draw_world(asset_server: Res<AssetServer>, query: Query<(&Mesh, &Transform, &
 //         let (w, h, pitch_px, tex) = &CELL_BRICK_TEXTURE.wait();
         
 
+        let mut vertex_type = VertexType::VERTEX_32BITF | VertexType::TRANSFORM_3D;
         
         for (mesh, transform, material) in query.iter() {
             
-            let handle = material.handle.as_ref().unwrap().upgrade().unwrap();
+            if let Some(handle) = &material.handle {
+                if let Some(s_handle) = handle.upgrade() {
+                    let w = s_handle.width();
+                    let h = s_handle.height();
+                    let pitch_px = s_handle.pitch();
+                    
+                    // Setup Texture
+                    // Textures need to be swizzled
+                    sys::sceGuTexMode(TexturePixelFormat::Psm8888, 0, 0, 1);
+                    sys::sceGuTexImage(MipmapLevel::None, w as i32, h as i32, pitch_px as i32, s_handle.raw_bytes());
+                    sys::sceGuTexFunc(TextureEffect::Replace, TextureColorComponent::Rgb); // Texture Function
+                    sys::sceGuTexFilter(TextureFilter::Linear, TextureFilter::Linear); // Texture filtering
+                    sys::sceGuTexScale(1.0, 1.0); // Texture scale
+                    sys::sceGuTexOffset(0.0, 0.0); // Texture offset
+                   
+                    // Indicate that the next render will include a texture
+                    vertex_type.set(VertexType::TEXTURE_32BITF, true);
+                }
+            };
             
-            let w = handle.width();
-            let h = handle.height();
-            let pitch_px = handle.pitch();
-            
-            // Setup Texture
-            // Textures need to be swizzled
-            sys::sceGuTexMode(TexturePixelFormat::Psm8888, 0, 0, 1);
-            sys::sceGuTexImage(MipmapLevel::None, w as i32, h as i32, pitch_px as i32, handle.raw_bytes());
-            sys::sceGuTexFunc(TextureEffect::Replace, TextureColorComponent::Rgb); // Texture Function
-            sys::sceGuTexFilter(TextureFilter::Linear, TextureFilter::Linear); // Texture filtering
-            sys::sceGuTexScale(1.0, 1.0); // Texture scale
-            sys::sceGuTexOffset(0.0, 0.0); // Texture offset
-            
-            let vertex_type = &mut (VertexType::TEXTURE_32BITF | VertexType::VERTEX_32BITF | VertexType::TRANSFORM_3D);
-            
+            // Set to model manipulation mode
             sys::sceGumMatrixMode(sys::MatrixMode::Model);
             sys::sceGumLoadIdentity();
+            
             // Place mesh
             sys::sceGumTranslate(&transform.translation);
             sys::sceGumRotateXYZ(&transform.rotation);
@@ -438,8 +442,8 @@ unsafe fn psp_main_inner() {
         (
             setup_gu.before(clear_screen),
             clear_screen,
-            draw_world.after(clear_screen),
-            finish_gu.after(draw_world)
+            render_world.after(clear_screen),
+            finish_gu.after(render_world)
         )
     );
 
