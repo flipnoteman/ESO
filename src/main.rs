@@ -84,7 +84,7 @@ impl Transform {
         }
     }
     
-    pub fn with_rotation(&mut self, x: f32, y: f32, z: f32) -> Self {
+    pub fn with_rotation(&self, x: f32, y: f32, z: f32) -> Self {
         let translation = self.translation;
    
         Transform {
