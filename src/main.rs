@@ -15,7 +15,7 @@ use bevy_ecs::system::{Commands, Query, Res, ResMut, Single};
 use bevy_ecs::world::World;
 use psp::Align16;
 use psp::sys::{
-    self, ClearBuffer, CtrlButtons, DepthFunc, DisplayPixelFormat, FrontFaceDirection, GuContextType, GuPrimitive, GuState, GuSyncBehavior, GuSyncMode, MipmapLevel,  ScePspFVector3,  ShadingModel, TextureColorComponent, TextureEffect, TextureFilter, TexturePixelFormat, VertexType
+    self, sceGuBlendFunc, sceGuEnable, ClearBuffer, CtrlButtons, DepthFunc, DisplayPixelFormat, FrontFaceDirection, GuContextType, GuPrimitive, GuState, GuSyncBehavior, GuSyncMode, MipmapLevel, ScePspFVector3, ShadingModel, TextureColorComponent, TextureEffect, TextureFilter, TexturePixelFormat, VertexType
 };
 use psp::vram_alloc::get_vram_allocator;
 use psp::{BUF_WIDTH, SCREEN_WIDTH, SCREEN_HEIGHT};
@@ -287,12 +287,18 @@ fn render_world(query: Query<(&Mesh, &Transform, &Material)>) {
                     let w = s_handle.width();
                     let h = s_handle.height();
                     let pitch_px = s_handle.pitch();
+                    let swizzle = material.swizzle as i32; 
+
+                    if material.blend {
+                        sceGuEnable(GuState::Blend);
+                        sceGuBlendFunc(sys::BlendOp::Add,  sys::BlendFactor::SrcAlpha, sys::BlendFactor::OneMinusSrcAlpha, 0, 0);
+                    }
                     
                     // Setup Texture
                     // Textures need to be swizzled
-                    sys::sceGuTexMode(TexturePixelFormat::Psm8888, 0, 0, 1);
+                    sys::sceGuTexMode(TexturePixelFormat::Psm8888, 0, 0, swizzle);
                     sys::sceGuTexImage(MipmapLevel::None, w as i32, h as i32, pitch_px as i32, s_handle.raw_bytes());
-                    sys::sceGuTexFunc(TextureEffect::Replace, TextureColorComponent::Rgb); // Texture Function
+                    sys::sceGuTexFunc(TextureEffect::Replace, TextureColorComponent::Rgba); // Texture Function
                     sys::sceGuTexFilter(TextureFilter::Linear, TextureFilter::Linear); // Texture filtering
                     sys::sceGuTexScale(1.0, 1.0); // Texture scale
                     sys::sceGuTexOffset(0.0, 0.0); // Texture offset
@@ -332,7 +338,10 @@ fn render_world(query: Query<(&Mesh, &Transform, &Material)>) {
                 ind,
                 mesh.vertices.as_ptr() as *const _
             );
-            
+
+            if material.blend {
+                sys::sceGuDisable(GuState::Blend);
+            }
         }
 
     }
@@ -385,7 +394,8 @@ fn setup_world(
         Transform::default(),
     ));
     
-    let brick_material = Material::new(&brick_handle, TexturePixelFormat::Psm8888, true);
+    let brick_material = Material::new(&brick_handle, TexturePixelFormat::Psm8888, true, false);
+    let font_material = Material::new(&font_handle, TexturePixelFormat::Psm8888, false, true);
     
     // Spawn world objects
     world.spawn_batch(vec![
@@ -401,9 +411,14 @@ fn setup_world(
         ),
         (
             Mesh::subdivided_plane(10.0, 10.0, 2, 2),
-            Transform::from_xyz(0.0, -0.5, -0.0).with_rotation(-PI/2.0, 0.0, 0.0),
+            Transform::from_xyz(0.0, -0.5, 0.0).with_rotation(-PI/2.0, 0.0, 0.0),
             brick_material
         ),
+        (
+            Mesh::plane(3.0, 3.0),
+            Transform::from_xyz(-1.0, 1.0, -1.0).with_rotation(0.0, PI/2.0, 0.0),
+            font_material
+        )
     ]);
 }
 

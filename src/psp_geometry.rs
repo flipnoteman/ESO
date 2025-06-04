@@ -21,6 +21,7 @@ pub struct Material {
     pub handle: Option<Weak<TextureHandle>>,
     pub texture_format: TexturePixelFormat,
     pub swizzle: bool,
+    pub blend: bool,
 
 }
 
@@ -30,20 +31,22 @@ impl Default for Material {
             handle: None,
             texture_format: TexturePixelFormat::PsmT4,
             swizzle: false,
+            blend: false,
         }
     }
 }
 
 impl Material {
-    pub fn new(handle: &Arc<TextureHandle>, texture_format: TexturePixelFormat, swizzle: bool) -> Self {
+    pub fn new(handle: &Arc<TextureHandle>, texture_format: TexturePixelFormat, swizzle: bool, blend: bool) -> Self {
         Material {
             handle: Some(Arc::downgrade(handle)),
             texture_format,
-            swizzle
+            swizzle,
+            blend
         }
     }
-
 }
+
 #[repr(C, align(4))]
 #[derive(Component)]
 pub struct Mesh {
@@ -127,38 +130,38 @@ impl Mesh {
         let h = size * 0.5; // half-extent
 
         // ------- 24 unique vertices: 4 per face -------
-        let verts = avec![
+          let verts = avec![
             [16] |
             // +Z (front) ---------------------------------------------------------
-            v(-h,-h, h, 0.0,0.0), // 0
-            v(-h, h, h, 0.0, 1.0), // 1
-            v(h, h, h, 1.0, 1.0),  // 2
-            v(h, -h, h, 1.0, 0.0), // 3
+            v(-h, -h,  h, 0.0, 1.0), // 0
+            v(-h,  h,  h, 0.0, 0.0), // 1
+            v( h,  h,  h, 1.0, 0.0), // 2
+            v( h, -h,  h, 1.0, 1.0), // 3
             // –Z (back) ----------------------------------------------------------
-            v(-h, -h, -h, 1.0, 0.0), // 4
-            v(h, -h, -h, 0.0, 0.0),  // 5
-            v(h, h, -h, 0.0, 1.0),   // 6
-            v(-h, h, -h, 1.0, 1.0),  // 7
+            v(-h, -h, -h, 1.0, 1.0), // 4
+            v( h, -h, -h, 0.0, 1.0), // 5
+            v( h,  h, -h, 0.0, 0.0), // 6
+            v(-h,  h, -h, 1.0, 0.0), // 7
             // +X (right) ---------------------------------------------------------
-            v(h, -h, -h, 0.0, 0.0), // 8
-            v(h, -h, h, 1.0, 0.0),  // 9
-            v(h, h, h, 1.0, 1.0),   //10
-            v(h, h, -h, 0.0, 1.0),  //11
+            v( h, -h, -h, 0.0, 1.0), // 8
+            v( h, -h,  h, 1.0, 1.0), // 9
+            v( h,  h,  h, 1.0, 0.0), // 10
+            v( h,  h, -h, 0.0, 0.0), // 11
             // –X (left) ----------------------------------------------------------
-            v(-h, -h, -h, 1.0, 0.0), //12
-            v(-h, h, -h, 0.0, 0.0),  //13
-            v(-h, h, h, 0.0, 1.0),   //14
-            v(-h, -h, h, 1.0, 1.0),  //15
+            v(-h, -h, -h, 1.0, 1.0), // 12
+            v(-h,  h, -h, 0.0, 1.0), // 13
+            v(-h,  h,  h, 0.0, 0.0), // 14
+            v(-h, -h,  h, 1.0, 0.0), // 15
             // +Y (top) -----------------------------------------------------------
-            v(-h, h, -h, 0.0, 0.0), //16
-            v(h, h, -h, 1.0, 0.0),  //17
-            v(h, h, h, 1.0, 1.0),   //18
-            v(-h, h, h, 0.0, 1.0),  //19
+            v(-h,  h, -h, 0.0, 1.0), // 16
+            v( h,  h, -h, 1.0, 1.0), // 17
+            v( h,  h,  h, 1.0, 0.0), // 18
+            v(-h,  h,  h, 0.0, 0.0), // 19
             // –Y (bottom) --------------------------------------------------------
-            v(-h, -h, -h, 1.0, 0.0), //20
-            v(-h, -h, h, 0.0, 0.0),  //21
-            v(h, -h, h, 0.0, 1.0),   //22
-            v(h, -h, -h, 1.0, 1.0)   //23
+            v(-h, -h, -h, 1.0, 1.0), // 20
+            v(-h, -h,  h, 0.0, 1.0), // 21
+            v( h, -h,  h, 0.0, 0.0), // 22
+            v( h, -h, -h, 1.0, 0.0)  // 23
         ];
 
         // ------- 36 indices (two triangles per face) -------
@@ -291,12 +294,12 @@ impl Mesh {
 
         Mesh {
             vertices: avec!(
-                [16] | v(-x, -y, 0.0, 0.0, 0.0),
-                v(-x, y, 0.0, 0.0, 1.0),
-                v(x, y, 0.0, 1.0, 1.0),
-                v(-x, -y, 0.0, 0.0, 0.0),
-                v(x, y, 0.0, 1.0, 1.0),
-                v(x, -y, 0.0, 1.0, 0.0)
+                [16] | v(-x, -y, 0.0, 0.0, 1.0),
+                v(-x, y, 0.0, 0.0, 0.0),
+                v(x, y, 0.0, 1.0, 0.0),
+                v(-x, -y, 0.0, 0.0, 1.0),
+                v(x, y, 0.0, 1.0, 0.0),
+                v(x, -y, 0.0, 1.0, 1.0)
             ),
             ..Default::default()
         }
