@@ -123,7 +123,10 @@ impl Asset for Image {
             let (w, h, p, data) = load_png_swizzled(slice::from_raw_parts(handle as *const u8, fd.size as usize)).map_err(|e| IoError(format!("Could not load and swizzle the png: {}", e)))?;
             let t_d = AVec::from_slice(16, data.as_ref());
 
-            return Ok((w as usize, h as usize, p as usize, t_d)); 
+            // Free the temporary buffer holding the raw file data
+            dealloc(handle as *mut u8, layout);
+
+            return Ok((w as usize, h as usize, p as usize, t_d));
         }
     }
 }
