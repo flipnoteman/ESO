@@ -23,7 +23,7 @@ use bevy_ecs::component;
 
 extern crate alloc;
 
-use psp_assets::{Asset, AssetServer, Image};
+use psp_assets::{Asset, AssetServer, Font, Image};
 use psp_geometry::{Material, Mesh};
 use spin::Once;
 
@@ -208,14 +208,6 @@ fn update_player(mut transform: Single<&mut Transform, With<Player>>, time: Res<
         sys::sceGumTranslate(&t);
     }
 }
- 
-
-
-// fn init_textures(mut asset_server: ResMut<AssetServer>) {
-//     CELL_BRICK_TEXTURE.call_once(||unsafe { load_png_swizzled(include_bytes!("../assets/cell_brick.png")).expect("Bad PNG") });
-//     DEFAULT_FONT_TEXTURE.call_once(|| unsafe { load_png(include_bytes!("../assets/default_font.png")).expect("Could not load font")});
-// 
-// }
 
 #[allow(non_snake_case)]
 fn init_Gu() {
@@ -279,7 +271,7 @@ fn render_world(query: Query<(&Mesh, &Transform, &Material)>) {
         // Setup matrices for rendering
         sys::sceGumMatrixMode(sys::MatrixMode::Projection);
         sys::sceGumLoadIdentity();
-        // Fov, Aspect Ration, Near clipping field, far clipping field
+        // Fov, Aspect Ratio, Near clipping field, far clipping field
         sys::sceGumPerspective(90.0, 16.0 / 9.0, 0.50, 40.0);
 
         // Have set load the identity matrix into the model matrix so that the model we spawn isn't
@@ -287,14 +279,9 @@ fn render_world(query: Query<(&Mesh, &Transform, &Material)>) {
         sys::sceGumMatrixMode(sys::MatrixMode::Model);
         sys::sceGumLoadIdentity();
 
-
-//         let (w, h, pitch_px, tex) = &CELL_BRICK_TEXTURE.wait();
-        
-
         let mut vertex_type = VertexType::VERTEX_32BITF | VertexType::TRANSFORM_3D;
         
         for (mesh, transform, material) in query.iter() {
-            
             if let Some(handle) = &material.handle {
                 if let Some(s_handle) = handle.upgrade() {
                     let w = s_handle.width();
@@ -355,15 +342,26 @@ fn setup_gu() {
     unsafe { sys::sceGuStart(GuContextType::Direct, &raw mut LIST.0 as *mut [u32; 0x40000] as *mut _) };
 }
 
-fn finish_gu() {
+fn finish_gu(mut asset_server: ResMut<AssetServer>) {
     unsafe {
+
+        // Finish Gu list and wait for all gu calls to finish
         sys::sceGuFinish();
         sys::sceGuSync(GuSyncMode::Finish, GuSyncBehavior::Wait);
-
+        
+        // Draw any debug text
         sys::sceGuDebugFlush();
-
+        
+        // Wait for vertical sync 
         sys::sceDisplayWaitVblankStart();
+
+        // Swap draw and display buffers
         sys::sceGuSwapBuffers();
+
+        println!("Handles: {:?}\nAssets: {}", asset_server.check_references("cell_brick.png"), asset_server.size());
+        
+        // Drop any assets that have no attached entities or stored handles
+        asset_server.drop_unused(); 
     }
 }
 
@@ -372,6 +370,10 @@ fn setup_world(
 ) {
 
     let mut asset_server = world.resource_mut::<AssetServer>();
+
+    let font_path = "ms0:/psp/game/cat_dev/eso/assets/default_font.png";
+    let font = Font::new(font_path);
+    let font_handle = asset_server.add(font).expect(format!("Could not add image: {}", font_path).as_str());
 
     let brick_path = "ms0:/psp/game/cat_dev/eso/assets/cell_brick.png";
     let image = Image::new(brick_path);

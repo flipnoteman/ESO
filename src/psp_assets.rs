@@ -232,7 +232,6 @@ impl fmt::Display for IoError {
     }
 }
 
-// TODO: Figure out loading of textures, and the disconnect between the Asset type and the
 // TextureHandle
 impl AssetServer {
     pub fn add(&mut self, asset: impl Asset) -> Result<Arc<TextureHandle>, IoError> {
@@ -247,10 +246,6 @@ impl AssetServer {
         // Load asset; get raw bytes
         let (w, h, pitch, decoded_bytes) = asset.load()?;
         
-//         // Align the data
-//         let mut aligned_data = AVec::new(16);
-//         aligned_data.extend_from_slice(&decoded_bytes);
-        
         // Generate a texture handle and a reference-counted pointer to that data and store it in
         // the AssetServer
         let th = TextureHandle::new(w, h, pitch, decoded_bytes);
@@ -261,13 +256,23 @@ impl AssetServer {
         Ok(handle) 
     }
 
+    /// Returns the size of the inner texture map
+    pub fn size(&self) -> usize {
+        self.texture_map.len()
+    }
+
     /// Get a strong handle to the texture
     pub fn get(&self, key: &'_ str) -> Option<Arc<TextureHandle>> {
         self.texture_map.get(key).map(|entry| entry.handle.clone())
     }
 
     /// Check for the amount of references to a given asset
-    pub fn check_references(&self, key: &'static str) -> Option<usize> {
-        self.texture_map.get(key).map(|arc| Arc::strong_count(&arc.handle)) 
+    pub fn check_references(&self, key: &'static str) -> Option<(usize, usize)> {
+        self.texture_map.get(key).map(|arc| (Arc::strong_count(&arc.handle), Arc::weak_count(&arc.handle)))
+    }
+
+    /// Drop textures that no longer have external references
+    pub fn drop_unused(&mut self) {
+        self.texture_map.retain(|_, entry| Arc::strong_count(&entry.handle) > 1 || Arc::weak_count(&entry.handle) > 0);
     }
 }
