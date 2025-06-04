@@ -7,6 +7,7 @@ use bevy_ecs::resource::Resource;
 use psp::sys::{sceIoClose, sceIoGetstat, sceIoOpen, sceIoOpenAsync, sceIoRead, sceIoReadAsync, IoOpenFlags, SceIoStat, SceUid};
 
 use crate::psp_image::load_png_swizzled;
+use crate::psp_image::load_png;
 
 // A texture handle object that the user will actually interact with.
 #[derive(Clone, Debug)]
@@ -95,6 +96,12 @@ pub struct Image {
     path: String,
 }
 
+/// Representation of a bitmap font on disk.
+#[derive(Clone, Eq, PartialEq)]
+pub struct Font {
+    path: String,
+}
+
 impl Asset for Image {
     fn path(&self) -> String {
         self.path.clone()
@@ -134,6 +141,58 @@ impl Asset for Image {
 impl Image {
     pub fn new(path: &'_ str) -> Self {
         Image {
+            path: String::from(path),
+        }
+    }
+}
+
+impl Asset for Font {
+    fn path(&self) -> String {
+        self.path.clone()
+    }
+
+    fn name(&self) -> String {
+        self.path.split(['/', '\\']).last().unwrap().to_string()
+    }
+
+    fn load(&self) -> Result<(usize, usize, usize, AVec<u8, ConstAlign<16>>), IoError> {
+        unsafe {
+            let fd = open_file(self.path.clone(), IoOpenFlags::RD_ONLY)?;
+
+            let layout = Layout::from_size_align(fd.size as usize, 16)
+                .map_err(|e| IoError(format!("Error in creating final layout: {}", e)))?;
+            let handle = alloc::alloc::alloc(layout) as *mut c_void;
+            if sceIoRead(fd.fd, handle, fd.size as u32) < 0 {
+                dealloc(handle as *mut u8, layout);
+                return Err(IoError(format!(
+                    "Could not read file \"{}\" of size: {}",
+                    self.path, fd.size
+                )));
+            }
+
+            if sceIoClose(fd.fd) < 0 {
+                dealloc(handle as *mut u8, layout);
+                return Err(IoError(format!(
+                    "Could not close file \"{}\" of size: {}",
+                    self.path, fd.size
+                )));
+            }
+
+            let (w, h, p, data) =
+                load_png(slice::from_raw_parts(handle as *const u8, fd.size as usize))
+                    .map_err(|e| IoError(format!("Could not load the png: {}", e)))?;
+            let t_d = AVec::from_slice(16, data.as_ref());
+
+            dealloc(handle as *mut u8, layout);
+
+            Ok((w as usize, h as usize, p as usize, t_d))
+        }
+    }
+}
+
+impl Font {
+    pub fn new(path: &'_ str) -> Self {
+        Font {
             path: String::from(path),
         }
     }
