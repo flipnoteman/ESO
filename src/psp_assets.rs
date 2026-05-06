@@ -1,13 +1,24 @@
 use core::{alloc::Layout, ffi::c_void};
 
 use aligned_vec::{AVec, ConstAlign};
-use alloc::{alloc::dealloc, boxed::Box, ffi::CString, fmt, format, slice, string::{String, ToString}, sync::Arc, vec::Vec};
-use hashbrown::HashMap;
+use alloc::{
+    alloc::dealloc,
+    boxed::Box,
+    ffi::CString,
+    fmt, format, slice,
+    string::{String, ToString},
+    sync::Arc,
+    vec::Vec,
+};
 use bevy_ecs::resource::Resource;
-use psp::sys::{sceIoClose, sceIoGetstat, sceIoOpen, sceIoOpenAsync, sceIoRead, sceIoReadAsync, IoOpenFlags, SceIoStat, SceUid};
+use hashbrown::HashMap;
+use psp::sys::{
+    IoOpenFlags, SceIoStat, SceUid, sceIoClose, sceIoGetstat, sceIoOpen, sceIoOpenAsync, sceIoRead,
+    sceIoReadAsync,
+};
 
-use crate::psp_image::load_png_swizzled;
 use crate::psp_image::load_png;
+use crate::psp_image::load_png_swizzled;
 
 // A texture handle object that the user will actually interact with.
 #[derive(Clone, Debug)]
@@ -19,15 +30,19 @@ pub struct TextureHandle {
 }
 
 pub struct File {
-    fd: SceUid,
-    size: i64,
+    pub fd: SceUid,
+    pub size: i64,
 }
 
 // TODO: Look into using the async functions provided in the Io api
 pub fn open_file(filepath: String, io_flags: IoOpenFlags) -> Result<File, IoError> {
     unsafe {
-        
-        let path = CString::new(filepath).map_err(|_| IoError(format!("{}", "Error in converting filepath to CString".to_string())))?;
+        let path = CString::new(filepath).map_err(|_| {
+            IoError(format!(
+                "{}",
+                "Error in converting filepath to CString".to_string()
+            ))
+        })?;
 
         let stat_layout = Layout::new::<SceIoStat>();
         let stats = alloc::alloc::alloc_zeroed(stat_layout) as *mut SceIoStat;
@@ -37,22 +52,25 @@ pub fn open_file(filepath: String, io_flags: IoOpenFlags) -> Result<File, IoErro
         }
 
         let fd = sceIoOpen(path.as_ptr() as *const u8, io_flags, 0777);
-        if fd.0 < 0 { return Err(IoError(format!("Failed to open file: {:?}.", path))) }
+        if fd.0 < 0 {
+            return Err(IoError(format!("Failed to open file: {:?}.", path)));
+        }
 
-        
         let size = (*stats).st_size;
 
         dealloc(stats as *mut u8, stat_layout);
-        
-        Ok(File {
-            fd,
-            size 
-        }) 
+
+        Ok(File { fd, size })
     }
 }
 
 impl TextureHandle {
-    pub fn new(width: usize, height: usize, pitch: usize, pixels: AVec<u8, ConstAlign<16>>) -> Self {
+    pub fn new(
+        width: usize,
+        height: usize,
+        pitch: usize,
+        pixels: AVec<u8, ConstAlign<16>>,
+    ) -> Self {
         TextureHandle {
             width,
             height,
@@ -79,7 +97,7 @@ impl TextureHandle {
 }
 
 pub trait Asset {
-//     fn bytes(&mut self) -> *const u8;
+    //     fn bytes(&mut self) -> *const u8;
     fn name(&self) -> String;
 
     fn path(&self) -> String {
@@ -90,7 +108,7 @@ pub trait Asset {
 }
 
 // TODO: If this image has no references we need to unload it, but also we need to add textures to
-// gpu ram when possible, and unload when they are not needed anymore 
+// gpu ram when possible, and unload when they are not needed anymore
 #[derive(Clone, Eq, PartialEq)]
 pub struct Image {
     path: String,
@@ -108,26 +126,35 @@ impl Asset for Image {
     }
 
     fn name(&self) -> String {
-       self.path.split(['/', '\\']).last().unwrap().to_string()
+        self.path.split(['/', '\\']).last().unwrap().to_string()
     }
 
     fn load(&self) -> Result<(usize, usize, usize, AVec<u8, ConstAlign<16>>), IoError> {
         unsafe {
-            let fd = open_file(self.path.clone(), IoOpenFlags::RD_ONLY)?; 
-             
-            let layout = Layout::from_size_align(fd.size as usize, 16).map_err(|e| IoError(format!("Error in creating final layout: {}", e)))?;
+            let fd = open_file(self.path.clone(), IoOpenFlags::RD_ONLY)?;
+
+            let layout = Layout::from_size_align(fd.size as usize, 16)
+                .map_err(|e| IoError(format!("Error in creating final layout: {}", e)))?;
             let handle = alloc::alloc::alloc(layout) as *mut c_void;
             if sceIoRead(fd.fd, handle, fd.size as u32) < 0 {
                 dealloc(handle as *mut u8, layout);
-                return Err(IoError(format!("Could not read file \"{}\" of size: {}", self.path, fd.size))); 
+                return Err(IoError(format!(
+                    "Could not read file \"{}\" of size: {}",
+                    self.path, fd.size
+                )));
             }
 
             if sceIoClose(fd.fd) < 0 {
                 dealloc(handle as *mut u8, layout);
-                return Err(IoError(format!("Could not close file \"{}\" of size: {}", self.path, fd.size))); 
+                return Err(IoError(format!(
+                    "Could not close file \"{}\" of size: {}",
+                    self.path, fd.size
+                )));
             }
 
-            let (w, h, p, data) = load_png_swizzled(slice::from_raw_parts(handle as *const u8, fd.size as usize)).map_err(|e| IoError(format!("Could not load and swizzle the png: {}", e)))?;
+            let (w, h, p, data) =
+                load_png_swizzled(slice::from_raw_parts(handle as *const u8, fd.size as usize))
+                    .map_err(|e| IoError(format!("Could not load and swizzle the png: {}", e)))?;
             let t_d = AVec::from_slice(16, data.as_ref());
 
             // Free the temporary buffer holding the raw file data
@@ -137,6 +164,7 @@ impl Asset for Image {
         }
     }
 }
+
 
 impl Image {
     pub fn new(path: &'_ str) -> Self {
@@ -199,7 +227,7 @@ impl Font {
 }
 
 pub struct AssetEntry {
-    handle: Arc<TextureHandle>
+    handle: Arc<TextureHandle>,
 }
 
 impl AssetEntry {
@@ -209,10 +237,9 @@ impl AssetEntry {
     }
 }
 
-
 #[derive(Resource)]
 pub struct AssetServer {
-    texture_map: HashMap<String, AssetEntry> 
+    texture_map: HashMap<String, AssetEntry>,
 }
 
 impl Default for AssetServer {
@@ -235,25 +262,29 @@ impl fmt::Display for IoError {
 // TextureHandle
 impl AssetServer {
     pub fn add(&mut self, asset: impl Asset) -> Result<Arc<TextureHandle>, IoError> {
-
         let name = asset.name();
 
         // Check for existing asset with same path
         if let Some(e) = self.texture_map.get(&name) {
-            return Ok(e.handle.clone())
+            return Ok(e.handle.clone());
         }
 
         // Load asset; get raw bytes
         let (w, h, pitch, decoded_bytes) = asset.load()?;
-        
+
         // Generate a texture handle and a reference-counted pointer to that data and store it in
         // the AssetServer
         let th = TextureHandle::new(w, h, pitch, decoded_bytes);
         let handle = Arc::new(th);
-        self.texture_map.insert(asset.name(), AssetEntry { handle: handle.clone() });
-        
+        self.texture_map.insert(
+            asset.name(),
+            AssetEntry {
+                handle: handle.clone(),
+            },
+        );
+
         // Return the handle
-        Ok(handle) 
+        Ok(handle)
     }
 
     /// Returns the size of the inner texture map
@@ -268,11 +299,15 @@ impl AssetServer {
 
     /// Check for the amount of references to a given asset
     pub fn check_references(&self, key: &'static str) -> Option<(usize, usize)> {
-        self.texture_map.get(key).map(|arc| (Arc::strong_count(&arc.handle), Arc::weak_count(&arc.handle)))
+        self.texture_map
+            .get(key)
+            .map(|arc| (Arc::strong_count(&arc.handle), Arc::weak_count(&arc.handle)))
     }
 
     /// Drop textures that no longer have external references
     pub fn drop_unused(&mut self) {
-        self.texture_map.retain(|_, entry| Arc::strong_count(&entry.handle) > 1 || Arc::weak_count(&entry.handle) > 0);
+        self.texture_map.retain(|_, entry| {
+            Arc::strong_count(&entry.handle) > 1 || Arc::weak_count(&entry.handle) > 0
+        });
     }
 }

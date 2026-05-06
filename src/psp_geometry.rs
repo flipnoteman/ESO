@@ -1,5 +1,9 @@
 use aligned_vec::{AVec, ConstAlign, avec};
-use alloc::{boxed::Box, string::String, sync::{Arc, Weak}};
+use alloc::{
+    boxed::Box,
+    string::String,
+    sync::{Arc, Weak},
+};
 use bevy_ecs::component::Component;
 use psp::sys::{GuPrimitive, TexturePixelFormat};
 
@@ -16,13 +20,62 @@ pub struct Vertex {
 }
 
 #[repr(C, align(4))]
+#[derive(Copy, Clone)]
+pub struct Sprite {
+    color: u32,
+    x: i32,
+    y: i32,
+    width: u32,
+    height: u32,
+    rotation: f32,
+    scale: f32,
+} 
+
+impl Sprite {
+    pub const fn new(color: u32, x: i32, y: i32, width: u32, height: u32) -> Self {
+        Self {
+            color,
+            x,
+            y,
+            width,
+            height,
+            rotation: 0.0,
+            scale: 1.0,
+        }
+    }
+
+    pub fn as_vertices(&self) -> [Vertex; 2] {
+        [
+            Vertex {
+                u: 0.0,
+                v: 0.0,
+                x: self.x as f32,
+                y: self.y as f32,
+                z: 0.0
+            },
+            Vertex {
+                u: self.width as f32,
+                v: self.height as f32,
+                x: self.x as f32 + self.width as f32,
+                y: self.y as f32 + self.height as f32,
+                z: 0.0
+            }
+        ]
+    }
+
+    pub fn set_pos(&mut self, x: i32, y: i32) {
+        self.x = x;
+        self.y = y;
+    }
+}
+
+#[repr(C, align(4))]
 #[derive(Clone, Component)]
 pub struct Material {
     pub handle: Option<Weak<TextureHandle>>,
     pub texture_format: TexturePixelFormat,
     pub swizzle: bool,
     pub blend: bool,
-
 }
 
 impl Default for Material {
@@ -37,12 +90,17 @@ impl Default for Material {
 }
 
 impl Material {
-    pub fn new(handle: &Arc<TextureHandle>, texture_format: TexturePixelFormat, swizzle: bool, blend: bool) -> Self {
+    pub fn new(
+        handle: &Arc<TextureHandle>,
+        texture_format: TexturePixelFormat,
+        swizzle: bool,
+        blend: bool,
+    ) -> Self {
         Material {
             handle: Some(Arc::downgrade(handle)),
             texture_format,
             swizzle,
-            blend
+            blend,
         }
     }
 }
@@ -60,7 +118,7 @@ impl Default for Mesh {
         Mesh {
             vertices: AVec::new(16),
             indices: None,
-            primitive_type: GuPrimitive::Triangles
+            primitive_type: GuPrimitive::Triangles,
         }
     }
 }
@@ -130,38 +188,38 @@ impl Mesh {
         let h = size * 0.5; // half-extent
 
         // ------- 24 unique vertices: 4 per face -------
-          let verts = avec![
+        let verts = avec![
             [16] |
             // +Z (front) ---------------------------------------------------------
             v(-h, -h,  h, 0.0, 1.0), // 0
-            v(-h,  h,  h, 0.0, 0.0), // 1
-            v( h,  h,  h, 1.0, 0.0), // 2
-            v( h, -h,  h, 1.0, 1.0), // 3
+            v(-h, h, h, 0.0, 0.0), // 1
+            v(h, h, h, 1.0, 0.0),  // 2
+            v(h, -h, h, 1.0, 1.0), // 3
             // –Z (back) ----------------------------------------------------------
             v(-h, -h, -h, 1.0, 1.0), // 4
-            v( h, -h, -h, 0.0, 1.0), // 5
-            v( h,  h, -h, 0.0, 0.0), // 6
-            v(-h,  h, -h, 1.0, 0.0), // 7
+            v(h, -h, -h, 0.0, 1.0),  // 5
+            v(h, h, -h, 0.0, 0.0),   // 6
+            v(-h, h, -h, 1.0, 0.0),  // 7
             // +X (right) ---------------------------------------------------------
-            v( h, -h, -h, 0.0, 1.0), // 8
-            v( h, -h,  h, 1.0, 1.0), // 9
-            v( h,  h,  h, 1.0, 0.0), // 10
-            v( h,  h, -h, 0.0, 0.0), // 11
+            v(h, -h, -h, 0.0, 1.0), // 8
+            v(h, -h, h, 1.0, 1.0),  // 9
+            v(h, h, h, 1.0, 0.0),   // 10
+            v(h, h, -h, 0.0, 0.0),  // 11
             // –X (left) ----------------------------------------------------------
             v(-h, -h, -h, 1.0, 1.0), // 12
-            v(-h,  h, -h, 0.0, 1.0), // 13
-            v(-h,  h,  h, 0.0, 0.0), // 14
-            v(-h, -h,  h, 1.0, 0.0), // 15
+            v(-h, h, -h, 0.0, 1.0),  // 13
+            v(-h, h, h, 0.0, 0.0),   // 14
+            v(-h, -h, h, 1.0, 0.0),  // 15
             // +Y (top) -----------------------------------------------------------
-            v(-h,  h, -h, 0.0, 1.0), // 16
-            v( h,  h, -h, 1.0, 1.0), // 17
-            v( h,  h,  h, 1.0, 0.0), // 18
-            v(-h,  h,  h, 0.0, 0.0), // 19
+            v(-h, h, -h, 0.0, 1.0), // 16
+            v(h, h, -h, 1.0, 1.0),  // 17
+            v(h, h, h, 1.0, 0.0),   // 18
+            v(-h, h, h, 0.0, 0.0),  // 19
             // –Y (bottom) --------------------------------------------------------
             v(-h, -h, -h, 1.0, 1.0), // 20
-            v(-h, -h,  h, 0.0, 1.0), // 21
-            v( h, -h,  h, 0.0, 0.0), // 22
-            v( h, -h, -h, 1.0, 0.0)  // 23
+            v(-h, -h, h, 0.0, 1.0),  // 21
+            v(h, -h, h, 0.0, 0.0),   // 22
+            v(h, -h, -h, 1.0, 0.0)   // 23
         ];
 
         // ------- 36 indices (two triangles per face) -------
@@ -183,51 +241,78 @@ impl Mesh {
         let h = size * 0.5;
 
         // ---- vertex block is unchanged ---------------------------------------
-        let verts = avec![[16] |
+        let verts = avec![
+            [16] |
             // +Z front
-            v(-h,-h, h, 0.0, 0.0), v(-h, h, h, 0.0, 1.0),
-            v( h,-h, h, 1.0, 0.0), v( h, h, h, 1.0, 1.0),
-
+            v(-h,-h, h, 0.0, 0.0),
+            v(-h, h, h, 0.0, 1.0),
+            v(h, -h, h, 1.0, 0.0),
+            v(h, h, h, 1.0, 1.0),
             // +X right
-            v( h,-h, h, 0.0, 0.0), v( h, h, h, 0.0, 1.0),
-            v( h,-h,-h, 1.0, 0.0), v( h, h,-h, 1.0, 1.0),
-
+            v(h, -h, h, 0.0, 0.0),
+            v(h, h, h, 0.0, 1.0),
+            v(h, -h, -h, 1.0, 0.0),
+            v(h, h, -h, 1.0, 1.0),
             // –Z back
-            v( h,-h,-h, 0.0, 0.0), v( h, h,-h, 0.0, 1.0),
-            v(-h,-h,-h, 1.0, 0.0), v(-h, h,-h, 1.0, 1.0),
-
+            v(h, -h, -h, 0.0, 0.0),
+            v(h, h, -h, 0.0, 1.0),
+            v(-h, -h, -h, 1.0, 0.0),
+            v(-h, h, -h, 1.0, 1.0),
             // –X left
-            v(-h,-h,-h, 0.0, 0.0), v(-h, h,-h, 0.0, 1.0),
-            v(-h,-h, h, 1.0, 0.0), v(-h, h, h, 1.0, 1.0),
-
+            v(-h, -h, -h, 0.0, 0.0),
+            v(-h, h, -h, 0.0, 1.0),
+            v(-h, -h, h, 1.0, 0.0),
+            v(-h, h, h, 1.0, 1.0),
             // +Y top
-            v(-h, h, h, 0.0, 0.0), v(-h, h,-h, 0.0, 1.0),
-            v( h, h, h, 1.0, 0.0), v( h, h,-h, 1.0, 1.0),
-
+            v(-h, h, h, 0.0, 0.0),
+            v(-h, h, -h, 0.0, 1.0),
+            v(h, h, h, 1.0, 0.0),
+            v(h, h, -h, 1.0, 1.0),
             // –Y bottom
-            v(-h,-h,-h, 0.0, 0.0), v(-h,-h, h, 0.0, 1.0),
-            v( h,-h,-h, 1.0, 0.0), v( h,-h, h, 1.0, 1.0)
+            v(-h, -h, -h, 0.0, 0.0),
+            v(-h, -h, h, 0.0, 1.0),
+            v(h, -h, -h, 1.0, 0.0),
+            v(h, -h, h, 1.0, 1.0)
         ];
 
         // ---- 34-index strip:   BL  TR  TL  BR   (deg: last, first) ------------
-        let inds = avec![[16] |
-            /* front */  0, 3, 1, 2,
-            /* link  */  2, 4,
-            /* right */  7, 5, 6,
-            /* link  */  6, 8,
-            /* back  */ 11, 9,10,
-            /* link  */ 10,12,
-            /* left  */ 15,13,14,
-            /* link  */ 14,16,
-            /* top   */ 19,17,18,
-            /* link  */ 18,20,
-            /* bottom*/ 23,21,22
+        let inds = avec![
+            [16] |
+            /* front */  0,
+            3,
+            1,
+            2,
+            /* link  */ 2,
+            4,
+            /* right */ 7,
+            5,
+            6,
+            /* link  */ 6,
+            8,
+            /* back  */ 11,
+            9,
+            10,
+            /* link  */ 10,
+            12,
+            /* left  */ 15,
+            13,
+            14,
+            /* link  */ 14,
+            16,
+            /* top   */ 19,
+            17,
+            18,
+            /* link  */ 18,
+            20,
+            /* bottom*/ 23,
+            21,
+            22
         ];
 
         Mesh {
             vertices: verts,
             primitive_type: GuPrimitive::TriangleStrip,
-            indices: Some(inds),   // u16 indices on PSP
+            indices: Some(inds), // u16 indices on PSP
         }
     }
 
@@ -329,19 +414,16 @@ impl Mesh {
                 let y1 = y0 + dy;
 
                 // compute UVs from 0.0..1.0
-                let u0 = (i    ) as f32 / subdivs_x as f32;
+                let u0 = (i) as f32 / subdivs_x as f32;
                 let u1 = (i + 1) as f32 / subdivs_x as f32;
-                let v0 = (j    ) as f32 / subdivs_y as f32;
+                let v0 = (j) as f32 / subdivs_y as f32;
                 let v1 = (j + 1) as f32 / subdivs_y as f32;
 
                 // two triangles
                 let mut va = avec![
-                    [16] |
-                
-                    v(x0, y0, 0.0, u0, v0),
+                    [16] | v(x0, y0, 0.0, u0, v0),
                     v(x0, y1, 0.0, u0, v1),
                     v(x1, y1, 0.0, u1, v1),
-
                     v(x0, y0, 0.0, u0, v0),
                     v(x1, y1, 0.0, u1, v1),
                     v(x1, y0, 0.0, u1, v0)
@@ -353,7 +435,7 @@ impl Mesh {
 
         // now turn it into your Mesh – everything else is identical
         Mesh {
-            vertices: verts,    // or whatever your Mesh expects
+            vertices: verts, // or whatever your Mesh expects
             ..Default::default()
         }
     }

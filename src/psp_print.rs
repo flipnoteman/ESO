@@ -1,4 +1,4 @@
-use core::fmt::{self, write, Write};
+use core::fmt::{self, Write, write};
 use psp::sys;
 
 use crate::psp_geometry::Vertex;
@@ -6,18 +6,26 @@ use crate::psp_geometry::Vertex;
 const BUF_SIZE: usize = 256;
 
 struct GuBuf {
-    data: [u8; BUF_SIZE + 1],   // +1 for NUL
-    pos:  usize,
+    data: [u8; BUF_SIZE + 1], // +1 for NUL
+    pos: usize,
 }
 
 impl GuBuf {
-    #[inline] fn new() -> Self { Self { data: [0; BUF_SIZE + 1], pos: 0 } }
+    #[inline]
+    fn new() -> Self {
+        Self {
+            data: [0; BUF_SIZE + 1],
+            pos: 0,
+        }
+    }
 }
 
 impl Write for GuBuf {
     fn write_str(&mut self, s: &str) -> fmt::Result {
         for &b in s.as_bytes() {
-            if self.pos == BUF_SIZE { return Err(fmt::Error); }   // truncated
+            if self.pos == BUF_SIZE {
+                return Err(fmt::Error);
+            } // truncated
             self.data[self.pos] = b;
             self.pos += 1;
         }
@@ -36,8 +44,6 @@ pub fn gu_print_inner(x: i32, y: i32, col: u32, args: fmt::Arguments) {
         sys::sceGuDebugPrint(x, y, col, buf.data.as_ptr() as *const u8);
     }
 }
-
-
 
 #[macro_export]
 macro_rules! print_at {
