@@ -15,6 +15,7 @@ pub struct TextureHandle {
     width: usize,
     height: usize,
     pitch: usize,
+    swizzled: bool,
     pixels: AVec<u8, ConstAlign<16>>,
 }
 
@@ -52,11 +53,12 @@ pub fn open_file(filepath: String, io_flags: IoOpenFlags) -> Result<File, IoErro
 }
 
 impl TextureHandle {
-    pub fn new(width: usize, height: usize, pitch: usize, pixels: AVec<u8, ConstAlign<16>>) -> Self {
+    pub fn new(width: usize, height: usize, pitch: usize, swizzled: bool, pixels: AVec<u8, ConstAlign<16>>) -> Self {
         TextureHandle {
             width,
             height,
             pitch,
+            swizzled,
             pixels,
         }
     }
@@ -76,6 +78,10 @@ impl TextureHandle {
     pub fn raw_bytes(&self) -> *const c_void {
         self.pixels.as_ptr() as *const c_void
     }
+
+    pub fn is_swizzled(&self) -> bool {
+        self.swizzled
+    }
 }
 
 pub trait Asset {
@@ -86,7 +92,7 @@ pub trait Asset {
         "Placeholder".to_string()
     }
 
-    fn load(&self) -> Result<(usize, usize, usize, AVec<u8, ConstAlign<16>>), IoError>;
+    fn load(&self) -> Result<LoadedAsset, IoError>;
 }
 
 // TODO: If this image has no references we need to unload it, but also we need to add textures to
@@ -94,12 +100,30 @@ pub trait Asset {
 #[derive(Clone, Eq, PartialEq)]
 pub struct Image {
     path: String,
+    swizzle: bool,
 }
 
 /// Representation of a bitmap font on disk.
+// #[derive(Clone, Eq, PartialEq)]
+// pub struct Font {
+//     path: String,
+// }
+
 #[derive(Clone, Eq, PartialEq)]
-pub struct Font {
-    path: String,
+pub struct LoadedAsset {
+    width: usize,
+    height: usize,
+    pitch: usize,
+    swizzled: bool,
+    texture_data: AVec<u8, ConstAlign<16>>,
+}
+
+impl LoadedAsset {
+    pub fn new(width: usize, height: usize, pitch: usize, swizzled: bool, texture_data: AVec<u8, ConstAlign<16>>) -> LoadedAsset {
+        LoadedAsset{
+            width, height, pitch, swizzled, texture_data
+        }
+    }
 }
 
 impl Asset for Image {
@@ -111,7 +135,7 @@ impl Asset for Image {
        self.path.split(['/', '\\']).last().unwrap().to_string()
     }
 
-    fn load(&self) -> Result<(usize, usize, usize, AVec<u8, ConstAlign<16>>), IoError> {
+    fn load(&self) -> Result<LoadedAsset, IoError> {
         unsafe {
             let fd = open_file(self.path.clone(), IoOpenFlags::RD_ONLY)?; 
              
@@ -127,76 +151,82 @@ impl Asset for Image {
                 return Err(IoError(format!("Could not close file \"{}\" of size: {}", self.path, fd.size))); 
             }
 
-            let (w, h, p, data) = load_png_swizzled(slice::from_raw_parts(handle as *const u8, fd.size as usize)).map_err(|e| IoError(format!("Could not load and swizzle the png: {}", e)))?;
+            
+            let (w, h, p, data) = match self.swizzle {
+                true => load_png_swizzled(slice::from_raw_parts(handle as *const u8, fd.size as usize)).map_err(|e| IoError(format!("Could not load and swizzle the png: {}", e)))?,
+                false => load_png(slice::from_raw_parts(handle as *const u8, fd.size as usize)).map_err(|e| IoError(format!("Could not load png: {}", e)))?,
+            };
+            
             let t_d = AVec::from_slice(16, data.as_ref());
 
             // Free the temporary buffer holding the raw file data
             dealloc(handle as *mut u8, layout);
 
-            return Ok((w as usize, h as usize, p as usize, t_d));
+            return Ok(LoadedAsset::new(w as usize, h as usize, p as usize, self.swizzle, t_d));
         }
     }
 }
 
 impl Image {
-    pub fn new(path: &'_ str) -> Self {
+    pub fn new(path: &'_ str, swizzle: bool) -> Self {
         Image {
             path: String::from(path),
+            swizzle,
         }
     }
 }
 
-impl Asset for Font {
-    fn path(&self) -> String {
-        self.path.clone()
-    }
-
-    fn name(&self) -> String {
-        self.path.split(['/', '\\']).last().unwrap().to_string()
-    }
-
-    fn load(&self) -> Result<(usize, usize, usize, AVec<u8, ConstAlign<16>>), IoError> {
-        unsafe {
-            let fd = open_file(self.path.clone(), IoOpenFlags::RD_ONLY)?;
-
-            let layout = Layout::from_size_align(fd.size as usize, 16)
-                .map_err(|e| IoError(format!("Error in creating final layout: {}", e)))?;
-            let handle = alloc::alloc::alloc(layout) as *mut c_void;
-            if sceIoRead(fd.fd, handle, fd.size as u32) < 0 {
-                dealloc(handle as *mut u8, layout);
-                return Err(IoError(format!(
-                    "Could not read file \"{}\" of size: {}",
-                    self.path, fd.size
-                )));
-            }
-
-            if sceIoClose(fd.fd) < 0 {
-                dealloc(handle as *mut u8, layout);
-                return Err(IoError(format!(
-                    "Could not close file \"{}\" of size: {}",
-                    self.path, fd.size
-                )));
-            }
-
-            let (w, h, p, data) =
-                load_png(slice::from_raw_parts(handle as *const u8, fd.size as usize))
-                    .map_err(|e| IoError(format!("Could not load the png: {}", e)))?;
-            let t_d = AVec::from_slice(16, data.as_ref());
-
-            dealloc(handle as *mut u8, layout);
-
-            Ok((w as usize, h as usize, p as usize, t_d))
-        }
-    }
-}
-
-impl Font {
-    pub fn new(path: &'_ str) -> Self {
-        Font {
-            path: String::from(path),
-        }
-    }
-}
+// impl Asset for Font {
+//     fn path(&self) -> String {
+//         self.path.clone()
+//     }
+//
+//     fn name(&self) -> String {
+//         self.path.split(['/', '\\']).last().unwrap().to_string()
+//     }
+//
+//     fn load(&self) -> Result<(usize, usize, usize, AVec<u8, ConstAlign<16>>), IoError> {
+//         unsafe {
+//             let fd = open_file(self.path.clone(), IoOpenFlags::RD_ONLY)?;
+//
+//             let layout = Layout::from_size_align(fd.size as usize, 16)
+//                 .map_err(|e| IoError(format!("Error in creating final layout: {}", e)))?;
+//             let handle = alloc::alloc::alloc(layout) as *mut c_void;
+//             if sceIoRead(fd.fd, handle, fd.size as u32) < 0 {
+//                 dealloc(handle as *mut u8, layout);
+//                 return Err(IoError(format!(
+//                     "Could not read file \"{}\" of size: {}",
+//                     self.path, fd.size
+//                 )));
+//             }
+//
+//             if sceIoClose(fd.fd) < 0 {
+//                 dealloc(handle as *mut u8, layout);
+//                 return Err(IoError(format!(
+//                     "Could not close file \"{}\" of size: {}",
+//                     self.path, fd.size
+//                 )));
+//             }
+//
+//             let (w, h, p, data) =
+//                 load_png(slice::from_raw_parts(handle as *const u8, fd.size as usize))
+//                     .map_err(|e| IoError(format!("Could not load the png: {}", e)))?;
+//             let t_d = AVec::from_slice(16, data.as_ref());
+//
+//             dealloc(handle as *mut u8, layout);
+//
+//             Ok((w as usize, h as usize, p as usize, t_d))
+//         }
+//     }
+// }
+//
+// impl Font {
+//     pub fn new(path: &'_ str) -> Self {
+//         Font {
+//             path: String::from(path),
+//         }
+//     }
+// }
 
 pub struct AssetEntry {
     handle: Arc<TextureHandle>
@@ -244,11 +274,11 @@ impl AssetServer {
         }
 
         // Load asset; get raw bytes
-        let (w, h, pitch, decoded_bytes) = asset.load()?;
+        let loaded_asset = asset.load()?;
         
         // Generate a texture handle and a reference-counted pointer to that data and store it in
         // the AssetServer
-        let th = TextureHandle::new(w, h, pitch, decoded_bytes);
+        let th = TextureHandle::new(loaded_asset.width, loaded_asset.height, loaded_asset.pitch, loaded_asset.swizzled, loaded_asset.texture_data);
         let handle = Arc::new(th);
         self.texture_map.insert(asset.name(), AssetEntry { handle: handle.clone() });
         

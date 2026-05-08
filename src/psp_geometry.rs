@@ -20,7 +20,6 @@ pub struct Vertex {
 pub struct Material {
     pub handle: Option<Weak<TextureHandle>>,
     pub texture_format: TexturePixelFormat,
-    pub swizzle: bool,
     pub blend: bool,
 
 }
@@ -30,18 +29,16 @@ impl Default for Material {
         Material {
             handle: None,
             texture_format: TexturePixelFormat::PsmT4,
-            swizzle: false,
             blend: false,
         }
     }
 }
 
 impl Material {
-    pub fn new(handle: &Arc<TextureHandle>, texture_format: TexturePixelFormat, swizzle: bool, blend: bool) -> Self {
+    pub fn new(handle: &Arc<TextureHandle>, texture_format: TexturePixelFormat, blend: bool) -> Self {
         Material {
             handle: Some(Arc::downgrade(handle)),
             texture_format,
-            swizzle,
             blend
         }
     }
