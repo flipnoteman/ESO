@@ -3,40 +3,44 @@
 #![allow(unsafe_op_in_unsafe_fn)]
 #![allow(static_mut_refs)]
 #![allow(dead_code)]
+#![allow(unused)]
 #![feature(asm_experimental_arch)]
+#![allow(unused_imports)]
+#![allow(linker_messages)]
 
-use core::ffi::c_void;
-use core::ptr::null;
-use core::{ptr, f32::consts::PI};
-use alloc::sync::Arc;
-use alloc::{format, vec};
-use bevy_ecs::query::{With, WorldQuery};
+use alloc::{format, sync::Arc, vec};
+use bevy_ecs::component;
+use bevy_ecs::query::With;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::{IntoScheduleConfigs, Schedule};
-use bevy_ecs::system::{Commands, Query, Res, ResMut, Single};
+use bevy_ecs::system::{Query, Res, ResMut, Single};
 use bevy_ecs::world::World;
+use core::ptr::null;
+use core::{f32::consts::PI, ptr};
 use psp::Align16;
 use psp::sys::{
-    self, sceGuBlendFunc, sceGuEnable, ClearBuffer, CtrlButtons, DepthFunc, DisplayPixelFormat, FrontFaceDirection, GuContextType, GuPrimitive, GuState, GuSyncBehavior, GuSyncMode, MipmapLevel, ScePspFVector3, ShadingModel, TextureColorComponent, TextureEffect, TextureFilter, TexturePixelFormat, VertexType
+    self, ClearBuffer, CtrlButtons, DepthFunc, DisplayPixelFormat, FrontFaceDirection,
+    GuContextType, GuState, GuSyncBehavior, GuSyncMode, MipmapLevel, ScePspFVector3, ShadingModel,
+    TextureColorComponent, TextureEffect, TextureFilter, TexturePixelFormat, VertexType,
+    sceGuBlendFunc, sceGuEnable,
 };
 use psp::vram_alloc::get_vram_allocator;
-use psp::{BUF_WIDTH, SCREEN_WIDTH, SCREEN_HEIGHT};
-use bevy_ecs::component;
+use psp::{BUF_WIDTH, SCREEN_HEIGHT, SCREEN_WIDTH};
 
 extern crate alloc;
 
-use psp_assets::{Asset, AssetServer, Image};
-use psp_geometry::{Material, Mesh};
-use spin::Once;
-
+// Project includes
+mod asset_handling;
 mod psp_image;
-mod psp_geometry;
 mod psp_input;
-mod psp_print;
 mod psp_math;
+mod psp_print;
 mod psp_text;
-mod psp_assets;
-use psp_image::{load_png, load_png_swizzled};
+
+use crate::asset_handling::mesh::MeshAsset;
+use crate::asset_handling::server::AssetServer;
+use crate::asset_handling::texture::Texture;
+use crate::asset_handling::{Material, Mesh};
 
 psp::module!("ESO", 1, 1);
 
@@ -47,7 +51,7 @@ const PLAYER_SPEED: f32 = 2.5;
 const CAMERA_ROTATION_SPEED: f32 = PI;
 
 #[derive(Debug, component::Component)]
-struct Transform{
+struct Transform {
     translation: ScePspFVector3,
     rotation: ScePspFVector3,
 }
@@ -64,7 +68,7 @@ impl Default for Transform {
                 x: 0.,
                 y: 0.,
                 z: 0.,
-            }
+            },
         }
     }
 }
@@ -76,22 +80,22 @@ impl Transform {
             ..Default::default()
         }
     }
-    
+
     pub fn with_translation(&self, x: f32, y: f32, z: f32) -> Self {
         let rotation = self.rotation;
-   
+
         Transform {
             translation: ScePspFVector3 { x, y, z },
-            rotation 
+            rotation,
         }
     }
-    
+
     pub fn with_rotation(&self, x: f32, y: f32, z: f32) -> Self {
         let translation = self.translation;
-   
+
         Transform {
             translation,
-            rotation: ScePspFVector3 { x, y, z }, 
+            rotation: ScePspFVector3 { x, y, z },
         }
     }
 }
@@ -102,14 +106,14 @@ struct Player;
 #[derive(Resource, Debug)]
 struct Controller {
     buttons: CtrlButtons,
-    analog: [f32; 2]
+    analog: [f32; 2],
 }
 
 impl Default for Controller {
     fn default() -> Self {
         Controller {
             buttons: CtrlButtons::default(),
-            analog: [0.0, 0.0]
+            analog: [0.0, 0.0],
         }
     }
 }
@@ -118,12 +122,12 @@ impl Default for Controller {
 struct Time {
     delta: i64,
     total: i64,
-    time: i64
+    time: i64,
 }
 
 impl Default for Time {
     fn default() -> Self {
-        let now = unsafe { psp::sys::sceKernelGetSystemTimeWide() };  
+        let now = unsafe { psp::sys::sceKernelGetSystemTimeWide() };
         Self {
             delta: 0,
             total: 0,
@@ -139,11 +143,11 @@ impl Time {
     }
 }
 
-fn update_time(mut time: ResMut<Time>){
+fn update_time(mut time: ResMut<Time>) {
     unsafe {
-        let now = psp::sys::sceKernelGetSystemTimeWide();  
+        let now = psp::sys::sceKernelGetSystemTimeWide();
         let delta = now - time.time;
-        
+
         time.delta = delta;
         time.total += delta;
         time.time = now;
@@ -157,9 +161,12 @@ fn update_controls(mut controller: ResMut<Controller>) {
     controller.buttons = buttons;
 }
 
-fn update_player(mut transform: Single<&mut Transform, With<Player>>, time: Res<Time>, controller: Res<Controller>) {
+fn update_player(
+    mut transform: Single<&mut Transform, With<Player>>,
+    time: Res<Time>,
+    controller: Res<Controller>,
+) {
     unsafe {
-
         // set Gu Matrix mode to edit the View
         sys::sceGumMatrixMode(sys::MatrixMode::View);
         sys::sceGumLoadIdentity();
@@ -171,7 +178,7 @@ fn update_player(mut transform: Single<&mut Transform, With<Player>>, time: Res<
         // Calculate the cos and sin of the current camera rotation
         let sin = psp_math::vfpu_sinf(transform.rotation.y);
         let cos = psp_math::vfpu_cosf(transform.rotation.y);
-        
+
         // Calculate delta time and set the players translation to the new coordinates based on motion
         let dt = time.delta_seconds();
 
@@ -179,24 +186,25 @@ fn update_player(mut transform: Single<&mut Transform, With<Player>>, time: Res<
         let smooth_pitch = |raw: f32, limit: f32| {
             use core::f32::consts::FRAC_PI_2; // pi / 2.0
             // Clamp actual rotation since we are approximating tanh with sin
-            let clamped = raw.clamp(-FRAC_PI_2, FRAC_PI_2); 
+            let clamped = raw.clamp(-FRAC_PI_2, FRAC_PI_2);
             psp_math::vfpu_sinf(clamped) * limit
         };
 
         //================= Control definitions and effects
-        
-        if controller.buttons.contains(CtrlButtons::LTRIGGER) { // StrafeLock control
+
+        if controller.buttons.contains(CtrlButtons::LTRIGGER) {
+            // StrafeLock control
             transform.translation.x += (sx * cos - sy * sin) * PLAYER_SPEED * dt;
             transform.translation.z += -(sx * sin + sy * cos) * PLAYER_SPEED * dt;
 
-            // TODO: Implement Camera lock when enemies exist
-        } else if controller.buttons.contains(CtrlButtons::RTRIGGER) { // Freelook Control
+            // TODO: Implement Camera lock on when enemies are present
+        } else if controller.buttons.contains(CtrlButtons::RTRIGGER) {
+            // Freelook Control
             // Translate stick to camera movement
             transform.rotation.x += sy * CAMERA_ROTATION_SPEED * dt;
             transform.rotation.y += sx * CAMERA_ROTATION_SPEED * dt;
-             
-            
-        } else { // Normal control
+        } else {
+            // Normal control
             // Stick y controls forward/backwards movement
             transform.translation.x += -sy * sin * PLAYER_SPEED * dt;
             transform.translation.z += -sy * cos * PLAYER_SPEED * dt;
@@ -208,18 +216,25 @@ fn update_player(mut transform: Single<&mut Transform, With<Player>>, time: Res<
             let decay = 8.0;
             transform.rotation.x *= 1.0 - (decay * dt).min(1.0);
         }
-        
+
         //================= This is like constraints and junk
-        
-        // Clamp x rotation 
-        transform.rotation.x = transform.rotation.x.clamp(-core::f32::consts::FRAC_PI_2,core::f32::consts::FRAC_PI_2);
-        
+
+        // Clamp x rotation
+        transform.rotation.x = transform
+            .rotation
+            .x
+            .clamp(-core::f32::consts::FRAC_PI_2, core::f32::consts::FRAC_PI_2);
+
         // If rotation is greater than PI or less than PI then reset it so that it doesn't go out of bounds
-        if transform.rotation.y > PI {transform.rotation.y  -= 2.0 * PI } 
-        if transform.rotation.y < -PI {transform.rotation.y  += 2.0 * PI } 
-        
+        if transform.rotation.y > PI {
+            transform.rotation.y -= 2.0 * PI
+        }
+        if transform.rotation.y < -PI {
+            transform.rotation.y += 2.0 * PI
+        }
+
         //=================
-        
+
         // Define display rotation vector
         const PITCH_CLAMP_DEG: f32 = 90.0; // in degrees
         let display_rotation = ScePspFVector3 {
@@ -227,18 +242,18 @@ fn update_player(mut transform: Single<&mut Transform, With<Player>>, time: Res<
             y: transform.rotation.y,
             z: transform.rotation.z,
         };
-        
+
         // Rotate camera (applies yaw first, then pitch y-->x)
         sys::sceGumRotateXYZ(&display_rotation);
-        
+
         // Create translation vector based on the negatives of our translation
         // This is because We want everything to move in the opposite direction of the camera
         let t = ScePspFVector3 {
             x: -transform.translation.x,
             y: 0.0,
-            z: transform.translation.z
+            z: transform.translation.z,
         };
-        
+
         // Move the camera
         sys::sceGumTranslate(&t);
     }
@@ -250,13 +265,15 @@ fn init_Gu() {
         psp::enable_home_button();
 
         let allocator = get_vram_allocator().unwrap();
-        let fbp0 = allocator.alloc_texture_pixels(BUF_WIDTH, SCREEN_HEIGHT, TexturePixelFormat::Psm8888);
-        let fbp1 = allocator.alloc_texture_pixels(BUF_WIDTH, SCREEN_HEIGHT, TexturePixelFormat::Psm8888);
-        let zbp = allocator.alloc_texture_pixels(BUF_WIDTH, SCREEN_HEIGHT, TexturePixelFormat::Psm4444);
+        let fbp0 =
+            allocator.alloc_texture_pixels(BUF_WIDTH, SCREEN_HEIGHT, TexturePixelFormat::Psm8888);
+        let fbp1 =
+            allocator.alloc_texture_pixels(BUF_WIDTH, SCREEN_HEIGHT, TexturePixelFormat::Psm8888);
+        let zbp =
+            allocator.alloc_texture_pixels(BUF_WIDTH, SCREEN_HEIGHT, TexturePixelFormat::Psm4444);
         // Attempting to free the three VRAM chunks at this point would give a
         // compile-time error since fbp0, fbp1 and zbp are used later on
         //allocator.free_all();
-        
 
         // Load identity matrix into Gu
         sys::sceGumLoadIdentity();
@@ -265,9 +282,21 @@ fn init_Gu() {
         sys::sceGuInit();
 
         // Setup Gu for 3d
-        sys::sceGuStart(GuContextType::Direct, &raw mut LIST.0 as *mut [u32; 0x40000] as *mut _);
-        sys::sceGuDrawBuffer(DisplayPixelFormat::Psm8888, fbp0.as_mut_ptr_from_zero() as _, BUF_WIDTH as i32);
-        sys::sceGuDispBuffer(SCREEN_WIDTH as i32, SCREEN_HEIGHT as i32, fbp1.as_mut_ptr_from_zero() as _, BUF_WIDTH as i32);
+        sys::sceGuStart(
+            GuContextType::Direct,
+            &raw mut LIST.0 as *mut [u32; 0x40000] as *mut _,
+        );
+        sys::sceGuDrawBuffer(
+            DisplayPixelFormat::Psm8888,
+            fbp0.as_mut_ptr_from_zero() as _,
+            BUF_WIDTH as i32,
+        );
+        sys::sceGuDispBuffer(
+            SCREEN_WIDTH as i32,
+            SCREEN_HEIGHT as i32,
+            fbp1.as_mut_ptr_from_zero() as _,
+            BUF_WIDTH as i32,
+        );
         sys::sceGuDepthBuffer(zbp.as_mut_ptr_from_zero() as _, BUF_WIDTH as i32);
         sys::sceGuOffset(2048 - (SCREEN_WIDTH / 2), 2048 - (SCREEN_HEIGHT / 2));
         sys::sceGuViewport(2048, 2048, SCREEN_WIDTH as i32, SCREEN_HEIGHT as i32);
@@ -293,7 +322,7 @@ fn init_Gu() {
 fn clear_screen() {
     unsafe {
         // clear screen
-        sys::sceGuClearColor(0xff554433);
+        sys::sceGuClearColor(0xff000000);
         sys::sceGuClearDepth(0);
         sys::sceGuClear(ClearBuffer::COLOR_BUFFER_BIT | ClearBuffer::DEPTH_BUFFER_BIT);
     }
@@ -304,47 +333,65 @@ struct HudElement;
 
 #[derive(component::Component)]
 struct WorldElement;
-    
+
 fn render_hud(query: Query<(&Mesh, &Transform, &Material), With<HudElement>>) {
     unsafe {
         // Disable depth test since these are UI elements
         sys::sceGuDisable(GuState::CullFace);
         sys::sceGuDisable(GuState::DepthTest);
-        
+
         // Load orthographic projection into projection matrix so we can use screen coordinates for
         // rendering
         sys::sceGumMatrixMode(sys::MatrixMode::Projection);
         sys::sceGumLoadIdentity();
-        sys::sceGumOrtho(0.0, SCREEN_WIDTH as f32, SCREEN_HEIGHT as f32, 0.0, -1.0, 1.0);
-        
+        sys::sceGumOrtho(
+            0.0,
+            SCREEN_WIDTH as f32,
+            SCREEN_HEIGHT as f32,
+            0.0,
+            -1.0,
+            1.0,
+        );
+
         // Reload identity into other matrices
         sys::sceGumMatrixMode(sys::MatrixMode::View);
         sys::sceGumLoadIdentity();
-        
 
-        let vertex_type = VertexType::VERTEX_32BITF | VertexType::TEXTURE_32BITF | VertexType::TRANSFORM_3D;
+        let vertex_type =
+            VertexType::VERTEX_32BITF | VertexType::TEXTURE_32BITF | VertexType::TRANSFORM_3D;
 
         for (mesh, transform, material) in query.iter() {
-
-            if let Some(handle) = &material.handle {
-                if let Some(s_handle) = handle.upgrade() {
+            if let Some(handle) = &material.handle() {
+                if let Some(s_handle) = handle.get() {
                     let w = s_handle.width();
                     let h = s_handle.height();
                     let pitch_px = s_handle.pitch();
 
-                    if material.blend {
+                    if material.blend() {
                         sceGuEnable(GuState::Blend);
-                        sceGuBlendFunc(sys::BlendOp::Add,  sys::BlendFactor::SrcAlpha, sys::BlendFactor::OneMinusSrcAlpha, 0, 0);
+                        sceGuBlendFunc(
+                            sys::BlendOp::Add,
+                            sys::BlendFactor::SrcAlpha,
+                            sys::BlendFactor::OneMinusSrcAlpha,
+                            0,
+                            0,
+                        );
                     }
-                    
+
                     // Setup Texture, we dont swizzle hud elements
                     sys::sceGuTexMode(TexturePixelFormat::Psm8888, 0, 0, 0);
-                    sys::sceGuTexImage(MipmapLevel::None, w as i32, h as i32, pitch_px as i32, s_handle.raw_bytes());
+                    sys::sceGuTexImage(
+                        MipmapLevel::None,
+                        w as i32,
+                        h as i32,
+                        pitch_px as i32,
+                        s_handle.raw_bytes(),
+                    );
                     sys::sceGuTexFunc(TextureEffect::Replace, TextureColorComponent::Rgba); // Texture Function
                     sys::sceGuTexFilter(TextureFilter::Linear, TextureFilter::Linear); // Texture filtering
                     sys::sceGuTexScale(1.0, 1.0); // Texture scale
                     sys::sceGuTexOffset(0.0, 0.0); // Texture offset
-                   
+
                     // Indicate that the next render will include a texture
                 }
             }
@@ -352,86 +399,109 @@ fn render_hud(query: Query<(&Mesh, &Transform, &Material), With<HudElement>>) {
             sys::sceGumMatrixMode(sys::MatrixMode::Model);
             sys::sceGumLoadIdentity();
             sys::sceGumTranslate(&transform.translation);
-//             sys::sceGumRotateXYZ(&transform.rotation);
-            //             
+            //             sys::sceGumRotateXYZ(&transform.rotation);
+            //
             sys::sceGumDrawArray(
-                mesh.primitive_type,
+                mesh.primitive_type(),
                 VertexType::from_bits_retain(vertex_type.bits()),
-                mesh.vertices.len() as i32,
+                mesh.vertices().len() as i32,
                 null(),
-                mesh.vertices.as_ptr() as *const _
+                mesh.vertices().as_ptr() as *const _,
             );
 
-            if material.blend {
+            if material.blend() {
                 sys::sceGuDisable(GuState::Blend);
             }
-
         }
-        
+
         // Renable depth testing for 3d world context
         sys::sceGuEnable(GuState::DepthTest);
         sys::sceGuEnable(GuState::CullFace);
     }
 }
 
-fn render_world(query: Query<(&Mesh, &Transform, &Material), With<WorldElement>>) {
+// fn cull_v(transform: Single<&Transform, With<Player>>) {
+//     // Custom Vertex Culling since PSP is aggressive
+//
+//     // let forward = ScePspFVector3 { x: psp_math::vfpu_sinf(),
+//     //     y: todo!(),
+//     //     z: todo!(),
+//     // };
+// }
+
+fn render_world(query: Query<(&Mesh, &Transform, Option<&Material>), With<WorldElement>>) {
     unsafe {
-        
         // Setup matrices for rendering
         sys::sceGumMatrixMode(sys::MatrixMode::Projection);
         sys::sceGumLoadIdentity();
+
         // Fov, Aspect Ratio, Near clipping field, far clipping field
-        sys::sceGumPerspective(90.0, 16.0 / 9.0, 0.50, 40.0);
+        sys::sceGumPerspective(70.0, SCREEN_WIDTH as f32 / SCREEN_HEIGHT as f32, 0.20, 40.0);
 
         // Have set load the identity matrix into the model matrix so that the model we spawn isn't
         // at some "random" orientation/permutation
         sys::sceGumMatrixMode(sys::MatrixMode::Model);
         sys::sceGumLoadIdentity();
 
-        let mut vertex_type = VertexType::VERTEX_32BITF | VertexType::TRANSFORM_3D;
-        
-        for (mesh, transform, material) in query.iter() {
-            if let Some(handle) = &material.handle {
-                if let Some(s_handle) = handle.upgrade() {
-                    let w = s_handle.width();
-                    let h = s_handle.height();
-                    let pitch_px = s_handle.pitch();
-                    let swizzle = s_handle.is_swizzled() as i32; 
+        let mut vertex_type =
+            VertexType::TEXTURE_32BITF | VertexType::VERTEX_32BITF | VertexType::TRANSFORM_3D;
 
-                    if material.blend {
-                        sceGuEnable(GuState::Blend);
-                        sceGuBlendFunc(sys::BlendOp::Add,  sys::BlendFactor::SrcAlpha, sys::BlendFactor::OneMinusSrcAlpha, 0, 0);
+        for (mesh, transform, mat_q) in query.iter() {
+            if let Some(material) = mat_q {
+                if let Some(handle) = &material.handle() {
+                    if let Some(s_handle) = handle.get() {
+                        let w = s_handle.width();
+                        let h = s_handle.height();
+                        let pitch_px = s_handle.pitch();
+                        let swizzle = s_handle.is_swizzled() as i32;
+
+                        if material.blend() {
+                            sceGuEnable(GuState::Blend);
+                            sceGuBlendFunc(
+                                sys::BlendOp::Add,
+                                sys::BlendFactor::SrcAlpha,
+                                sys::BlendFactor::OneMinusSrcAlpha,
+                                0,
+                                0,
+                            );
+                        }
+
+                        // Setup Texture
+                        // Textures need to be swizzled
+                        sys::sceGuTexMode(TexturePixelFormat::Psm8888, 0, 0, swizzle);
+                        sys::sceGuTexImage(
+                            MipmapLevel::None,
+                            w as i32,
+                            h as i32,
+                            pitch_px as i32,
+                            s_handle.raw_bytes(),
+                        );
+                        sys::sceGuTexFunc(TextureEffect::Replace, TextureColorComponent::Rgba); // Texture Function
+                        sys::sceGuTexFilter(TextureFilter::Nearest, TextureFilter::Nearest); // Texture filtering
+                        sys::sceGuTexScale(1.0, 1.0); // Texture scale
+                        sys::sceGuTexOffset(0.0, 0.0); // Texture offset
+
+                        // Indicate that the next render will include a texture
+                        // vertex_type.set(VertexType::TEXTURE_32BITF, true);
                     }
-                    
-                    // Setup Texture
-                    // Textures need to be swizzled
-                    sys::sceGuTexMode(TexturePixelFormat::Psm8888, 0, 0, swizzle);
-                    sys::sceGuTexImage(MipmapLevel::None, w as i32, h as i32, pitch_px as i32, s_handle.raw_bytes());
-                    sys::sceGuTexFunc(TextureEffect::Replace, TextureColorComponent::Rgba); // Texture Function
-                    sys::sceGuTexFilter(TextureFilter::Linear, TextureFilter::Linear); // Texture filtering
-                    sys::sceGuTexScale(1.0, 1.0); // Texture scale
-                    sys::sceGuTexOffset(0.0, 0.0); // Texture offset
-                   
-                    // Indicate that the next render will include a texture
-                    vertex_type.set(VertexType::TEXTURE_32BITF, true);
                 }
-            };
-            
+            }
+
             // Set to model manipulation mode
             sys::sceGumMatrixMode(sys::MatrixMode::Model);
             sys::sceGumLoadIdentity();
-            
+
             // Place mesh
             sys::sceGumTranslate(&transform.translation);
             sys::sceGumRotateXYZ(&transform.rotation);
-            
+
             // See if mesh was created with indices or full vertex descriptions
-            let ind = match &mesh.indices {
+            let ind = match &mesh.indices() {
                 // If it was created with indices, use them
                 Some(p) => {
                     vertex_type.set(VertexType::INDEX_16BIT, true);
                     p.as_ptr() as *const _
-                },
+                }
                 // Else, make sure we unset the bit value
                 None => {
                     vertex_type.set(VertexType::INDEX_16BIT, false);
@@ -441,121 +511,137 @@ fn render_world(query: Query<(&Mesh, &Transform, &Material), With<WorldElement>>
 
             // draw cube
             sys::sceGumDrawArray(
-                mesh.primitive_type,
+                mesh.primitive_type(),
                 VertexType::from_bits_retain(vertex_type.bits()),
-                mesh.vertices.len() as i32,
+                mesh.vertices().len() as i32,
                 ind,
-                mesh.vertices.as_ptr() as *const _
+                mesh.vertices().as_ptr() as *const _,
             );
 
-            if material.blend {
-                sys::sceGuDisable(GuState::Blend);
+            if let Some(material) = mat_q {
+                if material.blend() {
+                    sys::sceGuDisable(GuState::Blend);
+                }
             }
         }
-
     }
 }
 
 fn setup_gu() {
-    unsafe { sys::sceGuStart(GuContextType::Direct, &raw mut LIST.0 as *mut [u32; 0x40000] as *mut _) };
+    unsafe {
+        sys::sceGuStart(
+            GuContextType::Direct,
+            &raw mut LIST.0 as *mut [u32; 0x40000] as *mut _,
+        )
+    };
 }
 
 fn finish_gu(mut asset_server: ResMut<AssetServer>) {
     unsafe {
-
         // Finish Gu list and wait for all gu calls to finish
         sys::sceGuFinish();
         sys::sceGuSync(GuSyncMode::Finish, GuSyncBehavior::Wait);
-        
+
         // Draw any debug text
         sys::sceGuDebugFlush();
-        
-        // Wait for vertical sync 
+
+        // Wait for vertical sync
         sys::sceDisplayWaitVblankStart();
 
         // Swap draw and display buffers
         sys::sceGuSwapBuffers();
 
-        println!("Handles: {:?}\nAssets: {}", asset_server.check_references("cell_brick.png"), asset_server.size());
-        
+        println!(
+            "Handles: {:?}\nAssets: {}",
+            asset_server.check_references::<Texture>("cell_brick.png"),
+            asset_server.size()
+        );
+
         // Drop any assets that have no attached entities or stored handles
-        asset_server.drop_unused(); 
+        asset_server.drop_unused();
     }
 }
 
 fn setup_ui(world: &mut World) {
     let mut asset_server = world.resource_mut::<AssetServer>();
 
-    // let crosshair_path = "ms0:/psp/game/cat_dev/eso/assets/crosshair.png";
-    let crosshair_path = "./assets/crosshair.png";
-    let crosshair = Image::new(crosshair_path, false);
-    let crosshair_handle = asset_server.add(crosshair).expect(format!("Could not add image: {}", crosshair_path).as_str());
-    let crosshair_material = Material::new(&crosshair_handle, TexturePixelFormat::Psm8888, true);
-    
+    let crosshair_path = "ms0:/psp/game/cat_dev/eso/assets/crosshair.png";
+    // let crosshair_path = "./assets/crosshair.png";
+    let crosshair = Texture::new(crosshair_path, false);
+    let crosshair_handle = asset_server
+        .add(crosshair)
+        .expect(format!("Could not add image: {}", crosshair_path).as_str());
+
     world.spawn((
-        Mesh::plane(40.0, 40.0),
+        Mesh::plane(20.0, 20.0),
         Transform::from_xyz(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0, 0.0),
-        crosshair_material,
-        HudElement
+        Material::new(crosshair_handle, TexturePixelFormat::Psm8888, true),
+        HudElement,
     ));
 }
 
-fn setup_world(
-    world: &mut World,
-) {
-
+fn setup_world(world: &mut World) {
     let mut asset_server = world.resource_mut::<AssetServer>();
-    
-    // let font_path = "ms0:/psp/game/cat_dev/eso/assets/default_font.png";
-    let font_path = "./assets/default_font.png";
-    let font = Image::new(font_path, false);
-    let font_handle = asset_server.add(font).expect(format!("Could not add image: {}", font_path).as_str());
 
-    // let brick_path = "ms0:/psp/game/cat_dev/eso/assets/cell_brick.png";
-    let brick_path = "./assets/cell_brick.png";
-    let image = Image::new(brick_path, true);
-    let brick_handle = asset_server.add(image).expect(format!("Could not add image: {}", brick_path).as_str());
-     
+    let font_path = "ms0:/psp/game/cat_dev/eso/assets/default_font.png";
+    // let font_path = "./assets/default_font.png";
+    let font = Texture::new(font_path, false);
+    let font_handle = asset_server
+        .add(font)
+        .expect(format!("Could not add image: {}", font_path).as_str());
+
+    let brick_path = "ms0:/psp/game/cat_dev/eso/assets/cell_brick.png";
+    // let brick_path = "./assets/cell_brick.png";
+    let image = Texture::new(brick_path, true);
+
+    let brick_handle = asset_server
+        .add(image)
+        .expect(format!("Could not add image: {}", brick_path).as_str());
+
+    let chicken_path = "ms0:/psp/game/cat_dev/eso/assets/meshes/chicken.mesh";
+    let chicken_mesh = MeshAsset::new(chicken_path);
+    let chicken_handle = asset_server.add(chicken_mesh).expect("Could not add mesh");
+
     // Spawn components and entities
+    world.spawn((Player, Transform::default()));
+
+    // Spawn chicken
     world.spawn((
-        Player, 
-        Transform::default(),
+        Mesh::from_handle(&chicken_handle).expect("Mesh not loaded"),
+        Transform::from_xyz(0.0, 0.0, 0.0),
+        WorldElement,
     ));
-    
-    let brick_material = Material::new(&brick_handle, TexturePixelFormat::Psm8888, false);
-    let font_material = Material::new(&font_handle, TexturePixelFormat::Psm8888, true);
-    
+
     // Spawn world objects
     world.spawn_batch(vec![
         (
             Mesh::cube_indexed(1.0),
             Transform::from_xyz(0.0, 0.0, -2.0),
-            brick_material.clone(), // Should only clone a weak handle to the texture,
+            Material::new(brick_handle.clone(), TexturePixelFormat::Psm8888, false),
             WorldElement,
         ),
         (
             Mesh::cuboid(0.5, 2.0, 3.0),
-            Transform::from_xyz(3.0, 0.5, -2.0).with_rotation(0.0, PI/2.0, 0.0),
-            brick_material.clone(),
+            Transform::from_xyz(3.0, 0.5, -2.0).with_rotation(0.0, PI / 2.0, 0.0),
+            Material::new(brick_handle.clone(), TexturePixelFormat::Psm8888, false),
             WorldElement,
         ),
         (
             Mesh::subdivided_plane(10.0, 10.0, 2, 2),
-            Transform::from_xyz(0.0, -0.5, 0.0).with_rotation(-PI/2.0, 0.0, 0.0),
-            brick_material,
+            Transform::from_xyz(0.0, -0.5, 0.0).with_rotation(-PI / 2.0, 0.0, 0.0),
+            Material::new(brick_handle.clone(), TexturePixelFormat::Psm8888, false),
             WorldElement,
         ),
         (
             Mesh::plane(3.0, 3.0),
-            Transform::from_xyz(-1.0, 1.0, -1.0).with_rotation(0.0, PI/2.0, 0.0),
-            font_material,
+            Transform::from_xyz(-1.0, 1.0, -1.0).with_rotation(0.0, PI / 2.0, 0.0),
+            Material::new(font_handle, TexturePixelFormat::Psm8888, true),
             WorldElement,
-        )
+        ),
     ]);
 }
 
 unsafe fn psp_main_inner() {
-
     // Create world and resources
     let mut world = World::new();
     world.insert_resource(Time::default());
@@ -568,43 +654,36 @@ unsafe fn psp_main_inner() {
     let mut render_schedule = Schedule::default();
 
     // Functions to only be run once
-    startup_schedule.add_systems(
-        (
-            setup_world,
-            setup_ui,
-            init_Gu.after(setup_world),
-//             init_textures.after(init_Gu),
-        )
-    );
-    
+    startup_schedule.add_systems((
+        setup_world,
+        setup_ui,
+        init_Gu.after(setup_world),
+        //             init_textures.after(init_Gu),
+    ));
+
     // Functions that are separate to render functions that will run in primary context (before
     // Gu context swap
-    update_schedule.add_systems(
-        (
-            update_time,
-            update_controls, 
-            update_player.after(update_controls),
-        )
-    );
+    update_schedule.add_systems((
+        update_time,
+        update_controls,
+        update_player.after(update_controls),
+    ));
 
     // Functions that are used to render anything to the screen or affect the execution context
-    render_schedule.add_systems(
-        (
-            setup_gu.before(clear_screen),
-            clear_screen,
-            render_world.after(clear_screen),
-            render_hud.after(render_world),
-            finish_gu.after(render_hud),
-        )
-    );
+    render_schedule.add_systems((
+        setup_gu.before(clear_screen),
+        clear_screen,
+        render_world.after(clear_screen),
+        render_hud.after(render_world),
+        finish_gu.after(render_hud),
+    ));
 
-    
     // Run startup functions
     startup_schedule.run(&mut world);
 
     // Main game loop
     loop {
-        // This updates game logic 
+        // This updates game logic
         update_schedule.run(&mut world);
 
         render_schedule.run(&mut world);

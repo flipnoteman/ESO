@@ -2,11 +2,13 @@
 name = "eso"
 version = "0.1.0"
 edition = "2024"
-# build = "build.rs"
+build = "build.rs"
+# build = false
 
-[package.metadata.cargo-psp]
+# [package.metadata.cargo-psp]
 
 [dependencies]
+bytemuck = {version="1.23.0", features=["derive"]}
 aligned-vec = { version = "0.6.4", default-features = false }
 bevy_ecs = { version = "0.16.0", default-features = false }
 hashbrown = "0.15.3"
@@ -15,7 +17,10 @@ psp = "0.3.12"
 spin = "0.10.0"
 
 [build-dependencies]
-tobj = { version = "4.0.3", default-features = false }
-bytemuck = "1.23.0"
+gltf = "1"
+bytemuck = {version="1.23.0", features=["derive"]}
+glob = "0.3.3"
+
+
 
 

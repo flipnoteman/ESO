@@ -11,7 +11,7 @@ if ($files.Name -Contains 'Cargo.toml') {
 }
 
 
-$EBOOT = $CWD.Path + "\target\mipsel-sony-psp\release\EBOOT.PBP"
+$EBOOT = $CWD.Path + "\target\mipsel-sony-psp\release\eso.EBOOT.PBP"
 
 cargo-psp build --release
 Write-Output "Loading: $($EBOOT)"
