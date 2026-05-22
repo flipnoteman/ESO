@@ -73,12 +73,17 @@ fn main() {
                             .into_f32()
                             .collect();
 
-                        let indices: Vec<u16> = reader
+                        let mut indices: Vec<u16> = reader
                             .read_indices()
                             .expect("No indices")
                             .into_u32()
                             .map(|i| i as u16)
                             .collect();
+
+                        // glTF expects CCW winding, but our code expects CW, so we flip indices
+                        for tri in indices.chunks_exact_mut(3) {
+                            tri.swap(1, 2);
+                        }
 
                         println!("cargo::warning=       vertices: {}", positions.len());
                         println!("cargo::warning=       texcoords: {}", tex_coords.len());

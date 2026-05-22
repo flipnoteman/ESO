@@ -9,7 +9,7 @@
 #![allow(linker_messages)]
 
 use alloc::{format, sync::Arc, vec};
-use bevy_ecs::component;
+use bevy_ecs::component::{self, Component};
 use bevy_ecs::query::With;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::{IntoScheduleConfigs, Schedule};
@@ -140,6 +140,11 @@ impl Time {
     #[inline]
     pub fn delta_seconds(&self) -> f32 {
         self.delta as f32 * 1.0e-6
+    }
+
+    #[inline]
+    pub fn total_seconds(&self) -> f32 {
+        self.total as f32 * 1.0e-6
     }
 }
 
@@ -446,16 +451,22 @@ fn render_world(query: Query<(&Mesh, &Transform, Option<&Material>), With<WorldE
         let mut vertex_type =
             VertexType::TEXTURE_32BITF | VertexType::VERTEX_32BITF | VertexType::TRANSFORM_3D;
 
-        for (mesh, transform, mat_q) in query.iter() {
-            if let Some(material) = mat_q {
-                if let Some(handle) = &material.handle() {
+        for (mesh, transform, material) in query.iter() {
+            // If there is a material component on this entity
+            let mut blend_enabled = false;
+            let has_texture = if let Some(mat) = material {
+                // If there is a mat component on this entity, does it have a valid handle
+                if let Some(handle) = mat.handle() {
+                    // If it has a valid handle, see if it has valid data
                     if let Some(s_handle) = handle.get() {
+                        // There is a valid texture on this entity, load it
                         let w = s_handle.width();
                         let h = s_handle.height();
                         let pitch_px = s_handle.pitch();
                         let swizzle = s_handle.is_swizzled() as i32;
 
-                        if material.blend() {
+                        if mat.blend() {
+                            blend_enabled = true;
                             sceGuEnable(GuState::Blend);
                             sceGuBlendFunc(
                                 sys::BlendOp::Add,
@@ -482,9 +493,21 @@ fn render_world(query: Query<(&Mesh, &Transform, Option<&Material>), With<WorldE
                         sys::sceGuTexOffset(0.0, 0.0); // Texture offset
 
                         // Indicate that the next render will include a texture
-                        // vertex_type.set(VertexType::TEXTURE_32BITF, true);
+                        vertex_type.set(VertexType::TEXTURE_32BITF, true);
+                        true
+                    } else {
+                        false
                     }
+                } else {
+                    false
                 }
+            } else {
+                false
+            };
+
+            if !has_texture {
+                sys::sceGuDisable(GuState::Texture2D);
+                sys::sceGuColor(0xFFFF00FF);
             }
 
             // Set to model manipulation mode
@@ -509,19 +532,26 @@ fn render_world(query: Query<(&Mesh, &Transform, Option<&Material>), With<WorldE
                 }
             };
 
-            // draw cube
+            let count = match mesh.indices() {
+                Some(idx) => idx.len() as i32,
+                None => mesh.vertices().len() as i32,
+            };
+
+            // Draw
             sys::sceGumDrawArray(
                 mesh.primitive_type(),
                 VertexType::from_bits_retain(vertex_type.bits()),
-                mesh.vertices().len() as i32,
+                count,
                 ind,
                 mesh.vertices().as_ptr() as *const _,
             );
 
-            if let Some(material) = mat_q {
-                if material.blend() {
-                    sys::sceGuDisable(GuState::Blend);
-                }
+            if !has_texture {
+                sys::sceGuEnable(GuState::Texture2D);
+            }
+
+            if has_texture && blend_enabled {
+                sys::sceGuDisable(GuState::Blend);
             }
         }
     }
@@ -580,6 +610,24 @@ fn setup_ui(world: &mut World) {
     ));
 }
 
+#[derive(Clone, Component)]
+struct ChickenTag;
+
+fn move_chicken(mut transform: Single<(&mut Transform), With<ChickenTag>>, time: Res<Time>) {
+    let rotation = ScePspFVector3 {
+        x: transform.rotation.x,
+        y: transform.rotation.y + 1.5 * time.delta_seconds(),
+        z: transform.rotation.z,
+    };
+
+    transform.rotation = rotation;
+
+    let amplitude = 0.25;
+    let speed = 2.0;
+
+    transform.translation.y = amplitude * psp_math::vfpu_sinf(time.total_seconds() * speed);
+}
+
 fn setup_world(world: &mut World) {
     let mut asset_server = world.resource_mut::<AssetServer>();
 
@@ -610,6 +658,7 @@ fn setup_world(world: &mut World) {
         Mesh::from_handle(&chicken_handle).expect("Mesh not loaded"),
         Transform::from_xyz(0.0, 0.0, 0.0),
         WorldElement,
+        ChickenTag,
     ));
 
     // Spawn world objects
@@ -667,6 +716,7 @@ unsafe fn psp_main_inner() {
         update_time,
         update_controls,
         update_player.after(update_controls),
+        move_chicken,
     ));
 
     // Functions that are used to render anything to the screen or affect the execution context
