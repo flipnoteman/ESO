@@ -7,6 +7,20 @@ use std::fs;
 use std::io::Write;
 use std::path::Path;
 
+fn copy_dir(src: &Path, dst: &Path) {
+    fs::create_dir_all(dst).expect("Could not create destination directory");
+    for entry in fs::read_dir(src).expect("Could not read source directory") {
+        let entry = entry.expect("Could not read entry");
+        let src_path = entry.path();
+        let dst_path = dst.join(entry.file_name());
+        if src_path.is_dir() {
+            copy_dir(&src_path, &dst_path);
+        } else {
+            fs::copy(&src_path, &dst_path).expect("Could not copy file");
+        }
+    }
+}
+
 fn main() {
     let assets_dir = Path::new("./assets/"); //env::var_os("OUT_DIR").unwrap();
     let models_dir = Path::new(&assets_dir).join("models");
@@ -119,6 +133,21 @@ fn main() {
         }
     }
 
+    // Copy assets directory to build directory for ppsspp access
+    let out_dir = env::var("OUT_DIR").unwrap();
+    let build_assets = Path::new(&out_dir)
+        .parent()
+        .unwrap() // out
+        .parent()
+        .unwrap() // <crate>-<hash>
+        .parent()
+        .unwrap() // build
+        .join("assets");
+
+    println!("cargo::warning=Copying Assets to: {:?}", build_assets);
+
+    copy_dir(assets_dir, &build_assets);
+
     println!("cargo::rerun-if-changed=build.rs");
-    // println!("cargo::rerun-if-changed=assets/models");
+    println!("cargo::rerun-if-changed=assets/models");
 }

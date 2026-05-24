@@ -14,6 +14,18 @@ pub struct Vertex {
     pub z: f32,
 }
 
+impl Vertex {
+    pub const fn zero() -> Self {
+        Vertex {
+            u: 0.0,
+            v: 0.0,
+            x: 0.0,
+            y: 0.0,
+            z: 0.0,
+        }
+    }
+}
+
 #[inline]
 const fn v(x: f32, y: f32, z: f32, u: f32, v: f32) -> Vertex {
     Vertex { u, v, x, y, z }

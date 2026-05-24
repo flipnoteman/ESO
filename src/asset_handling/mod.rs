@@ -17,9 +17,10 @@ use server::AssetServer;
 
 use crate::asset_handling::{
     mesh::MeshData,
-    primitives::Vertex,
     server::{MeshHandle, TextureHandle},
 };
+
+pub use primitives::Vertex;
 
 #[derive(Debug, Clone)]
 pub struct IoError(String);
