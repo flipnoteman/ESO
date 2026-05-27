@@ -6,6 +6,15 @@ use crate::asset_handling::mesh::MeshData;
 
 #[repr(C, align(4))]
 #[derive(Clone, Copy, Pod, Zeroable)]
+pub struct ColorVertex {
+    pub color: u32,
+    pub x: f32,
+    pub y: f32,
+    pub z: f32,
+}
+
+#[repr(C, align(4))]
+#[derive(Clone, Copy, Pod, Zeroable)]
 pub struct Vertex {
     pub u: f32,
     pub v: f32,

@@ -1,41 +1,42 @@
-use minipng::{decode_png, decode_png_header};
-use alloc::alloc::{alloc_zeroed, dealloc, Layout};
+use alloc::alloc::{Layout, alloc_zeroed, dealloc};
 use alloc::boxed::Box;
 use alloc::vec;
 use core::ptr;
-
+use minipng::{decode_png, decode_png_header};
 
 /// Load a PNG from `bytes`, transcode to ABGR8888,
 /// and return (w, h, pitch_in_pixels, 16-byte-aligned Box<[u8]>).
-pub unsafe fn load_png(bytes: &[u8])
-    -> Result<(u32, u32, usize, Box<[u8]>), &'static str>
-{
+pub unsafe fn load_png(bytes: &[u8]) -> Result<(u32, u32, usize, Box<[u8]>), &'static str> {
     // 1) Decode with minipng
     let header = decode_png_header(bytes).map_err(|_| "bad header")?;
-    let mut buf = vec![0; header.required_bytes_rgba8bpc()];          // :contentReference[oaicite:1]{index=1}
-    let mut img  = decode_png(bytes, &mut buf).map_err(|_| "decode")?;
+    let mut buf = vec![0; header.required_bytes_rgba8bpc()]; // :contentReference[oaicite:1]{index=1}
+    let mut img = decode_png(bytes, &mut buf).map_err(|_| "decode")?;
     img.convert_to_rgba8bpc();
 
-    let w  = img.width()  as usize;
-    let h  = img.height() as usize;
+    let w = img.width() as usize;
+    let h = img.height() as usize;
 
     // 2) Compute GE-friendly pitch (multiple of 8 pixels ≡ 16 bytes)
-    let pitch_px = (w + 7) & !7;          // round up to 8-pixel blocks
+    let pitch_px = (w + 7) & !7; // round up to 8-pixel blocks
     let bytes_per_row = pitch_px * 4;
     let size = bytes_per_row * h;
 
     // 3) Allocate 16-byte-aligned heap block
     let layout = Layout::from_size_align(size, 16).map_err(|_| "layout")?;
     let ptr = unsafe { alloc_zeroed(layout) };
-    if ptr.is_null() { return Err("OOM"); }
+    if ptr.is_null() {
+        return Err("OOM");
+    }
 
     let src = img.pixels();
     for y in 0..h {
-        let src_row = &src[y * w * 4 .. (y + 1) * w * 4];
+        let src_row = &src[y * w * 4..(y + 1) * w * 4];
         let dst = unsafe { ptr.add(y * bytes_per_row) };
 
         // copy row as-is – NO channel swap
-        unsafe { ptr::copy_nonoverlapping(src_row.as_ptr(), dst, w * 4); }
+        unsafe {
+            ptr::copy_nonoverlapping(src_row.as_ptr(), dst, w * 4);
+        }
     }
 
     // 5) Hand the memory to Rust
@@ -57,32 +58,36 @@ pub unsafe fn load_png_swizzled(
 ) -> Result<(u32, u32, usize, Box<[u8]>), &'static str> {
     // 1) Decode with minipng
     let header = decode_png_header(bytes).map_err(|_| "bad header")?;
-    let mut buf = vec![0; header.required_bytes_rgba8bpc()];          // :contentReference[oaicite:1]{index=1}
-    let mut img  = decode_png(bytes, &mut buf).map_err(|_| "decode")?;
+    let mut buf = vec![0; header.required_bytes_rgba8bpc()]; // :contentReference[oaicite:1]{index=1}
+    let mut img = decode_png(bytes, &mut buf).map_err(|_| "decode")?;
     img.convert_to_rgba8bpc();
 
-    let w  = img.width()  as usize;
-    let h  = img.height() as usize;
+    let w = img.width() as usize;
+    let h = img.height() as usize;
 
     // 2) Compute GE-friendly pitch (multiple of 8 pixels ≡ 16 bytes)
-    let pitch_px = (w + 7) & !7;          // round up to 8-pixel blocks
+    let pitch_px = (w + 7) & !7; // round up to 8-pixel blocks
     let bytes_per_row = pitch_px * 4;
     let size = bytes_per_row * h;
 
     // 3) Allocate 16-byte-aligned heap block
     let layout = Layout::from_size_align(size, 16).map_err(|_| "layout")?;
     let ptr = unsafe { alloc_zeroed(layout) };
-    if ptr.is_null() { return Err("OOM"); }
+    if ptr.is_null() {
+        return Err("OOM");
+    }
 
     let src = img.pixels();
     for y in 0..h {
-        let src_row = &src[y * w * 4 .. (y + 1) * w * 4];
+        let src_row = &src[y * w * 4..(y + 1) * w * 4];
         let dst = unsafe { ptr.add(y * bytes_per_row) };
 
         // copy row as-is – NO channel swap
-        unsafe { ptr::copy_nonoverlapping(src_row.as_ptr(), dst, w * 4); }
+        unsafe {
+            ptr::copy_nonoverlapping(src_row.as_ptr(), dst, w * 4);
+        }
     }
-    
+
     // 4) Allocate the destination buffer (swizzled layout) -------------------
     let swizzled_ptr = alloc_zeroed(layout);
     if swizzled_ptr.is_null() {
@@ -97,9 +102,8 @@ pub unsafe fn load_png_swizzled(
     let src_pitch = (bytes_per_row - 16) / 4;
     let src_row = bytes_per_row * 8;
 
-
     let mut ysrc = ptr as *const u8;
-    let mut dst  = swizzled_ptr as *mut u32;
+    let mut dst = swizzled_ptr as *mut u32;
 
     for _ in 0..height_blocks {
         let mut xsrc = ysrc;
@@ -109,10 +113,18 @@ pub unsafe fn load_png_swizzled(
 
             // 8 rows × 4 dwords  →  16 × 8-pixel block
             for _ in 0..8 {
-                *dst = *src; dst = dst.add(1); src = src.add(1);
-                *dst = *src; dst = dst.add(1); src = src.add(1);
-                *dst = *src; dst = dst.add(1); src = src.add(1);
-                *dst = *src; dst = dst.add(1); src = src.add(1);
+                *dst = *src;
+                dst = dst.add(1);
+                src = src.add(1);
+                *dst = *src;
+                dst = dst.add(1);
+                src = src.add(1);
+                *dst = *src;
+                dst = dst.add(1);
+                src = src.add(1);
+                *dst = *src;
+                dst = dst.add(1);
+                src = src.add(1);
 
                 src = src.add(src_pitch);
             }
@@ -125,13 +137,10 @@ pub unsafe fn load_png_swizzled(
     // ------------------------------------------------------------------------
 
     // 5) Free the temporary linear buffer and return the swizzled one --------
-    dealloc(ptr, layout);    // 5) Hand the memory to Rust
-    
+    dealloc(ptr, layout); // 5) Hand the memory to Rust
+
     let slice = unsafe { core::slice::from_raw_parts_mut(swizzled_ptr, size) };
     Ok((w as u32, h as u32, pitch_px, Box::from_raw(slice)))
 }
 
 // fn swizzle_fast(ptr: *const u8, dst: *mut u32, w: )
-
-
-

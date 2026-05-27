@@ -1,5 +1,8 @@
 use core::{alloc::Layout, ffi::c_void};
 
+use super::image::{load_png, load_png_swizzled};
+use super::{Asset, IoError, fio::File};
+
 use aligned_vec::{AVec, ConstAlign};
 use alloc::{
     alloc::dealloc,
@@ -8,11 +11,6 @@ use alloc::{
     sync::Arc,
 };
 use psp::sys::{IoOpenFlags, sceIoClose, sceIoRead};
-
-use crate::{
-    asset_handling::{Asset, IoError, fio::File},
-    psp_image::{load_png, load_png_swizzled},
-};
 
 // A texture handle object that the user will actually interact with.
 #[derive(Clone, Debug)]

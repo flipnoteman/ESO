@@ -8,6 +8,7 @@ use core::fmt;
 use psp::sys::{GuPrimitive, TexturePixelFormat};
 
 mod fio;
+mod image;
 pub mod mesh;
 mod primitives;
 pub mod server;
@@ -20,7 +21,7 @@ use crate::asset_handling::{
     server::{MeshHandle, TextureHandle},
 };
 
-pub use primitives::Vertex;
+pub use primitives::{ColorVertex, Vertex};
 
 #[derive(Debug, Clone)]
 pub struct IoError(String);

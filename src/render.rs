@@ -2,8 +2,9 @@ use core::ptr::null;
 
 use bevy_ecs::{
     query::With,
+    resource::Resource,
     schedule::{IntoScheduleConfigs, Schedule},
-    system::{Query, ResMut},
+    system::{Query, Res, ResMut, Single},
     world::World,
 };
 use psp::{
@@ -13,18 +14,26 @@ use psp::{
 };
 
 use crate::{
-    HudElement, Transform, WorldElement,
+    HudElement, Player, Transform, WorldElement,
     asset_handling::{Material, Mesh, Vertex, server::AssetServer, texture::Texture},
+    physics::render_collider_debug,
     println,
-    psp_math::vfpu_tanf,
+    psp_math::{self, vfpu_tanf},
 };
 
-static mut LIST: Align16<[u32; 0x40000]> = Align16([0; 0x40000]);
+static mut LIST: Align16<[u32; 0x40000]> = Align16([0; 0x40000]); //Display List
 static mut CLIP_SCRATCH: Align16<[Vertex; 1024]> = Align16([Vertex::zero(); 1024]);
 
 const NEAR_PLANE: f32 = 0.15;
 const FAR_PLANE: f32 = 100.0;
 const FOV: f32 = 70.0;
+
+#[derive(Resource)]
+struct RenderDebug(bool);
+
+fn enable_debug(r: Res<RenderDebug>) -> bool {
+    r.0
+}
 
 // Functions that are used to render anything to the screen or affect the execution context
 pub struct Renderer {
@@ -32,25 +41,35 @@ pub struct Renderer {
 }
 
 impl Renderer {
-    pub fn new() -> Self {
-        let mut schedule = Schedule::default();
-        schedule.add_systems((
-            setup_gu.before(clear_screen),
-            clear_screen,
-            render_world.after(clear_screen),
-            render_hud.after(render_world),
-            finish_gu.after(render_hud),
-        ));
+    pub fn new(world: &mut World) -> Self {
+        unsafe {
+            let mut schedule = Schedule::default();
+            world.insert_resource(RenderDebug(false));
+            schedule.add_systems(((
+                setup_gu,
+                clear_screen,
+                render_camera,
+                render_world,
+                render_collider_debug.into_configs().run_if(enable_debug),
+                render_hud,
+                finish_gu,
+            )
+                .chain(),));
 
-        Renderer { schedule }
+            Renderer { schedule }
+        }
     }
 
     pub fn run(&mut self, world: &mut World) {
         self.schedule.run(world);
     }
 
+    pub fn set_debug(world: &mut World, t: bool) {
+        world.resource_mut::<RenderDebug>().0 = t;
+    }
+
     /// Initializes Renderer (GU) context
-    pub fn init(&self) {
+    pub fn init() {
         unsafe {
             psp::enable_home_button();
 
@@ -316,6 +335,45 @@ fn lerp_vertex(v0: &Vertex, v1: &Vertex, t: f32) -> Vertex {
         x: v0.x + t * (v1.x - v0.x),
         y: v0.y + t * (v1.y - v0.y),
         z: v0.z + t * (v1.z - v0.z),
+    }
+}
+
+/// Have to "render" (change camera position) here since physics and updates are applied before
+fn render_camera(mut transform: Single<&mut Transform, With<Player>>) {
+    unsafe {
+        // set Gu Matrix mode to edit the View
+        sys::sceGumMatrixMode(sys::MatrixMode::View);
+        sys::sceGumLoadIdentity();
+
+        //Vertical camera rotation (pitch) for smooth vertical camera movement
+        let smooth_pitch = |raw: f32, limit: f32| {
+            use core::f32::consts::FRAC_PI_2; // pi / 2.0
+            // Clamp actual rotation since we are approximating tanh with sin
+            let clamped = raw.clamp(-FRAC_PI_2, FRAC_PI_2);
+            psp_math::vfpu_sinf(clamped) * limit
+        };
+
+        // Define display rotation vector
+        const PITCH_CLAMP_DEG: f32 = 90.0; // in degrees
+        let display_rotation = ScePspFVector3 {
+            x: smooth_pitch(transform.rotation.x, (PITCH_CLAMP_DEG / 2.0).to_radians()),
+            y: transform.rotation.y,
+            z: transform.rotation.z,
+        };
+
+        // Apply rotation (yaw then pitch)
+        sys::sceGumRotateXYZ(&display_rotation);
+
+        // Create translation vector based on the negatives of our translation
+        // This is because We want everything to move in the opposite direction of the camera
+        let t = ScePspFVector3 {
+            x: -transform.translation.x,
+            y: 0.0,
+            z: -transform.translation.z,
+        };
+
+        // Move the camera
+        sys::sceGumTranslate(&t);
     }
 }
 

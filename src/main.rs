@@ -33,17 +33,17 @@ extern crate alloc;
 
 // Project includes
 mod asset_handling;
-mod psp_image;
+mod physics;
 mod psp_input;
 mod psp_math;
 mod psp_print;
-mod psp_text;
 mod render;
 
 use crate::asset_handling::mesh::MeshAsset;
 use crate::asset_handling::server::AssetServer;
 use crate::asset_handling::texture::Texture;
 use crate::asset_handling::{Material, Mesh, Vertex};
+use crate::physics::{Collider, PhysicsEngine};
 use crate::render::*;
 
 psp::module!("ESO", 1, 1);
@@ -168,16 +168,13 @@ fn update_controls(mut controller: ResMut<Controller>) {
     controller.buttons = buttons;
 }
 
+/// Everything to do with player (camera)
 fn update_player(
     mut transform: Single<&mut Transform, With<Player>>,
     time: Res<Time>,
     controller: Res<Controller>,
 ) {
     unsafe {
-        // set Gu Matrix mode to edit the View
-        sys::sceGumMatrixMode(sys::MatrixMode::View);
-        sys::sceGumLoadIdentity();
-
         // Get analog stick state
         let sx = controller.analog[0];
         let sy = controller.analog[1];
@@ -189,20 +186,12 @@ fn update_player(
         // Calculate delta time and set the players translation to the new coordinates based on motion
         let dt = time.delta_seconds();
 
-        //Vertical camera rotation (pitch) for smooth vertical camera movement
-        let smooth_pitch = |raw: f32, limit: f32| {
-            use core::f32::consts::FRAC_PI_2; // pi / 2.0
-            // Clamp actual rotation since we are approximating tanh with sin
-            let clamped = raw.clamp(-FRAC_PI_2, FRAC_PI_2);
-            psp_math::vfpu_sinf(clamped) * limit
-        };
-
         //================= Control definitions and effects
 
         if controller.buttons.contains(CtrlButtons::LTRIGGER) {
             // StrafeLock control
             transform.translation.x += (sx * cos - sy * sin) * PLAYER_SPEED * dt;
-            transform.translation.z += -(sx * sin + sy * cos) * PLAYER_SPEED * dt;
+            transform.translation.z -= -(sx * sin + sy * cos) * PLAYER_SPEED * dt;
 
             // TODO: Implement Camera lock on when enemies are present
         } else if controller.buttons.contains(CtrlButtons::RTRIGGER) {
@@ -214,7 +203,7 @@ fn update_player(
             // Normal control
             // Stick y controls forward/backwards movement
             transform.translation.x += -sy * sin * PLAYER_SPEED * dt;
-            transform.translation.z += -sy * cos * PLAYER_SPEED * dt;
+            transform.translation.z -= -sy * cos * PLAYER_SPEED * dt;
 
             // Stick x controls horizontal camera movement
             transform.rotation.y += sx * CAMERA_ROTATION_SPEED * dt;
@@ -239,30 +228,6 @@ fn update_player(
         if transform.rotation.y < -PI {
             transform.rotation.y += 2.0 * PI
         }
-
-        //=================
-
-        // Define display rotation vector
-        const PITCH_CLAMP_DEG: f32 = 90.0; // in degrees
-        let display_rotation = ScePspFVector3 {
-            x: smooth_pitch(transform.rotation.x, (PITCH_CLAMP_DEG / 2.0).to_radians()),
-            y: transform.rotation.y,
-            z: transform.rotation.z,
-        };
-
-        // Rotate camera (applies yaw first, then pitch y-->x)
-        sys::sceGumRotateXYZ(&display_rotation);
-
-        // Create translation vector based on the negatives of our translation
-        // This is because We want everything to move in the opposite direction of the camera
-        let t = ScePspFVector3 {
-            x: -transform.translation.x,
-            y: 0.0,
-            z: transform.translation.z,
-        };
-
-        // Move the camera
-        sys::sceGumTranslate(&t);
     }
 }
 
@@ -330,16 +295,28 @@ fn setup_world(world: &mut World) {
     let chicken_path = "./assets/meshes/chicken.mesh";
     let chicken_mesh = MeshAsset::new(chicken_path);
     let chicken_handle = asset_server.add(chicken_mesh).expect("Could not add mesh");
+    let chicken_texture_path = "./assets/meshes/mati_chicken_Diffuse256.png";
+    let chicken_texhandle = asset_server
+        .add(Texture::new(chicken_texture_path, true))
+        .expect(format!("Could not add image: {}", chicken_texture_path).as_str());
 
     // Spawn components and entities
-    world.spawn((Player, Transform::default()));
+    world.spawn((Player, Transform::default(), Collider::aabb(0.5, 1.0, 0.5)));
 
     // Spawn chicken
-    world.spawn((
+    world.spawn_batch(vec![(
         Mesh::from_handle(&chicken_handle).expect("Mesh not loaded"),
         Transform::from_xyz(0.0, 0.0, 0.0),
+        Material::new(chicken_texhandle.clone(), TexturePixelFormat::Psm8888, true),
         WorldElement,
         ChickenTag,
+    )]);
+
+    world.spawn((
+        Mesh::plane(3.0, 3.0),
+        Transform::from_xyz(-1.0, 1.0, -1.0).with_rotation(0.0, PI / 2.0, 0.0),
+        Material::new(font_handle, TexturePixelFormat::Psm8888, true),
+        WorldElement,
     ));
 
     // Spawn world objects
@@ -349,24 +326,21 @@ fn setup_world(world: &mut World) {
             Transform::from_xyz(0.0, 0.0, -2.0),
             Material::new(brick_handle.clone(), TexturePixelFormat::Psm8888, false),
             WorldElement,
+            Collider::aabb(1.0, 1.0, 1.0).fixed(),
         ),
         (
             Mesh::cuboid(0.5, 2.0, 3.0),
             Transform::from_xyz(3.0, 0.5, -2.0).with_rotation(0.0, PI / 2.0, 0.0),
             Material::new(brick_handle.clone(), TexturePixelFormat::Psm8888, false),
             WorldElement,
+            Collider::aabb(3.0, 2.0, 0.5).fixed(), // not dynamic
         ),
         (
             Mesh::subdivided_plane(10.0, 10.0, 2, 2),
             Transform::from_xyz(0.0, -0.5, 0.0).with_rotation(-PI / 2.0, 0.0, 0.0),
             Material::new(brick_handle.clone(), TexturePixelFormat::Psm8888, false),
             WorldElement,
-        ),
-        (
-            Mesh::plane(3.0, 3.0),
-            Transform::from_xyz(-1.0, 1.0, -1.0).with_rotation(0.0, PI / 2.0, 0.0),
-            Material::new(font_handle, TexturePixelFormat::Psm8888, true),
-            WorldElement,
+            Collider::aabb(10.0, 0.0, 10.0).fixed(),
         ),
     ]);
 }
@@ -374,8 +348,11 @@ fn setup_world(world: &mut World) {
 unsafe fn psp_main_inner() {
     // Create world and resources
     let mut world = World::new();
-    let mut renderer = Renderer::new();
-    renderer.init();
+    let mut renderer = Renderer::new(&mut world);
+    let mut physics = PhysicsEngine::new(&mut world);
+
+    Renderer::init();
+    Renderer::set_debug(&mut world, true);
 
     world.insert_resource(Time::default());
     world.insert_resource(Controller::default());
@@ -404,6 +381,8 @@ unsafe fn psp_main_inner() {
     loop {
         // This updates game logic
         update_schedule.run(&mut world);
+
+        physics.run(&mut world);
 
         renderer.run(&mut world);
     }

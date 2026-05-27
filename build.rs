@@ -1,7 +1,7 @@
 // build.rs
+#[allow(unused_imports)]
 use glob::glob;
 use gltf;
-#[allow(unused_imports)]
 use std::env;
 use std::fs;
 use std::io::Write;
@@ -128,6 +128,36 @@ fn main() {
                             .expect("Could not write index data");
                     }
                 }
+
+                for (i, anim) in document.animations().enumerate() {
+                    println!("cargo::warning=Animation {}: Name={:?} ", i, anim.name());
+                }
+                for (i, tex) in document.textures().enumerate() {
+                    println!(
+                        "cargo::warning=Texture {}: Name={:?}; Extras={:?}; source.name()={:?}; ",
+                        i,
+                        tex.name(),
+                        tex.extras(),
+                        tex.source().name(),
+                    );
+                }
+
+                for (i, image) in images.iter().enumerate() {
+                    println!(
+                        "cargo::warning=Image {}; w: {}, h: {}; format: {:?}",
+                        i, image.width, image.height, image.format,
+                    );
+                }
+
+                // for (i, mat) in document.materials().enumerate() {
+                //     println!(
+                //         "cargo::warning=Material {}: Name={:?}; normal: {:?}",
+                //         i,
+                //         mat.name(),
+                //         // mat.normal_texture().unwrap().texture().name()
+                //     );
+                // }
+
                 println!("cargo::warning=Written {}", out_path.to_str().unwrap());
             }
         }
@@ -149,5 +179,5 @@ fn main() {
     copy_dir(assets_dir, &build_assets);
 
     println!("cargo::rerun-if-changed=build.rs");
-    println!("cargo::rerun-if-changed=assets/models");
+    println!("cargo::rerun-if-changed=assets/");
 }
