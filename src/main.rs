@@ -14,7 +14,7 @@ use bevy_ecs::component::{self, Component};
 use bevy_ecs::query::With;
 use bevy_ecs::resource::Resource;
 use bevy_ecs::schedule::{IntoScheduleConfigs, Schedule};
-use bevy_ecs::system::{Query, Res, ResMut, Single};
+use bevy_ecs::system::{Local, Query, Res, ResMut, Single};
 use bevy_ecs::world::World;
 use bytemuck::Zeroable;
 use core::ptr::null;
@@ -38,13 +38,17 @@ mod psp_input;
 mod psp_math;
 mod psp_print;
 mod render;
+mod text;
 
 use crate::asset_handling::mesh::MeshAsset;
 use crate::asset_handling::server::AssetServer;
 use crate::asset_handling::texture::Texture;
 use crate::asset_handling::{Material, Mesh, Vertex};
-use crate::physics::{Collider, PhysicsEngine};
+use crate::physics::{
+    collect_static_data, player_physics, Collider, RigidBody, StaticBody, StaticColliderData,
+};
 use crate::render::*;
+use crate::text::Text;
 
 psp::module!("ESO", 1, 1);
 
@@ -52,7 +56,7 @@ psp::module!("ESO", 1, 1);
 const PLAYER_SPEED: f32 = 2.5;
 const CAMERA_ROTATION_SPEED: f32 = PI;
 
-#[derive(Debug, component::Component)]
+#[derive(Debug, Clone, component::Component)]
 struct Transform {
     translation: ScePspFVector3,
     rotation: ScePspFVector3,
@@ -153,7 +157,10 @@ impl Time {
 fn update_time(mut time: ResMut<Time>) {
     unsafe {
         let now = psp::sys::sceKernelGetSystemTimeWide();
-        let delta = now - time.time;
+        // Cap at ~30fps minimum. Without this, the first frame's delta equals the
+        // full startup duration (GU init + asset loading), causing physics to move
+        // the player dozens of metres in one step and tunnel through the floor.
+        let delta = (now - time.time).min(33_333);
 
         time.delta = delta;
         time.total += delta;
@@ -170,64 +177,67 @@ fn update_controls(mut controller: ResMut<Controller>) {
 
 /// Everything to do with player (camera)
 fn update_player(
-    mut transform: Single<&mut Transform, With<Player>>,
+    mut data: Single<(&mut Transform, &mut RigidBody), With<Player>>,
     time: Res<Time>,
     controller: Res<Controller>,
 ) {
-    unsafe {
-        // Get analog stick state
-        let sx = controller.analog[0];
-        let sy = controller.analog[1];
+    let (mut transform, mut body) = data.into_inner();
 
-        // Calculate the cos and sin of the current camera rotation
-        let sin = psp_math::vfpu_sinf(transform.rotation.y);
-        let cos = psp_math::vfpu_cosf(transform.rotation.y);
+    // Get analog stick state
+    let sx = controller.analog[0];
+    let sy = controller.analog[1];
 
-        // Calculate delta time and set the players translation to the new coordinates based on motion
-        let dt = time.delta_seconds();
+    // Calculate the cos and sin of the current camera rotation
+    let sin = psp_math::vfpu_sinf(transform.rotation.y);
+    let cos = psp_math::vfpu_cosf(transform.rotation.y);
 
-        //================= Control definitions and effects
+    // Calculate delta time
+    let dt = time.delta_seconds();
 
-        if controller.buttons.contains(CtrlButtons::LTRIGGER) {
-            // StrafeLock control
-            transform.translation.x += (sx * cos - sy * sin) * PLAYER_SPEED * dt;
-            transform.translation.z -= -(sx * sin + sy * cos) * PLAYER_SPEED * dt;
+    //================= Control definitions and effects
 
-            // TODO: Implement Camera lock on when enemies are present
-        } else if controller.buttons.contains(CtrlButtons::RTRIGGER) {
-            // Freelook Control
-            // Translate stick to camera movement
-            transform.rotation.x += sy * CAMERA_ROTATION_SPEED * dt;
-            transform.rotation.y += sx * CAMERA_ROTATION_SPEED * dt;
-        } else {
-            // Normal control
-            // Stick y controls forward/backwards movement
-            transform.translation.x += -sy * sin * PLAYER_SPEED * dt;
-            transform.translation.z -= -sy * cos * PLAYER_SPEED * dt;
+    if controller.buttons.contains(CtrlButtons::LTRIGGER) {
+        // StrafeLock control — set horizontal velocity from analog
+        body.velocity.x = (sx * cos - sy * sin) * PLAYER_SPEED;
+        body.velocity.z = (sx * sin + sy * cos) * PLAYER_SPEED;
 
-            // Stick x controls horizontal camera movement
-            transform.rotation.y += sx * CAMERA_ROTATION_SPEED * dt;
+        // TODO: Implement Camera lock on when enemies are present
+    } else if controller.buttons.contains(CtrlButtons::RTRIGGER) {
+        // Freelook Control — no movement
+        body.velocity.x = 0.0;
+        body.velocity.z = 0.0;
 
-            // Camera exponential decay back to zero
-            let decay = 8.0;
-            transform.rotation.x *= 1.0 - (decay * dt).min(1.0);
-        }
+        // Translate stick to camera movement
+        transform.rotation.x += sy * CAMERA_ROTATION_SPEED * dt;
+        transform.rotation.y += sx * CAMERA_ROTATION_SPEED * dt;
+    } else {
+        // Normal control
+        // Stick y controls forward/backwards movement
+        body.velocity.x = -sy * sin * PLAYER_SPEED;
+        body.velocity.z = sy * cos * PLAYER_SPEED;
 
-        //================= This is like constraints and junk
+        // Stick x controls horizontal camera movement
+        transform.rotation.y += sx * CAMERA_ROTATION_SPEED * dt;
 
-        // Clamp x rotation
-        transform.rotation.x = transform
-            .rotation
-            .x
-            .clamp(-core::f32::consts::FRAC_PI_2, core::f32::consts::FRAC_PI_2);
+        // Camera exponential decay back to zero
+        let decay = 8.0;
+        transform.rotation.x *= 1.0 - (decay * dt).min(1.0);
+    }
 
-        // If rotation is greater than PI or less than PI then reset it so that it doesn't go out of bounds
-        if transform.rotation.y > PI {
-            transform.rotation.y -= 2.0 * PI
-        }
-        if transform.rotation.y < -PI {
-            transform.rotation.y += 2.0 * PI
-        }
+    //================= This is like constraints and junk
+
+    // Clamp x rotation
+    transform.rotation.x = transform
+        .rotation
+        .x
+        .clamp(-core::f32::consts::FRAC_PI_2, core::f32::consts::FRAC_PI_2);
+
+    // If rotation is greater than PI or less than PI then reset it so that it doesn't go out of bounds
+    if transform.rotation.y > PI {
+        transform.rotation.y -= 2.0 * PI
+    }
+    if transform.rotation.y < -PI {
+        transform.rotation.y += 2.0 * PI
     }
 }
 
@@ -247,12 +257,88 @@ fn setup_ui(world: &mut World) {
         .add(crosshair)
         .expect(format!("Could not add image: {}", crosshair_path).as_str());
 
+    // HUD text. AssetServer::add dedups by filename, so this returns the same
+    // font handle whether or not setup_world loaded it first. Load before any
+    // spawn so the asset_server borrow is released before we touch `world`.
+    let font_path = "./assets/default_font.png";
+    let font_handle = asset_server
+        .add(Texture::new(font_path, false))
+        .expect(format!("Could not add image: {}", font_path).as_str());
+
     world.spawn((
         Mesh::plane(20.0, 20.0),
         Transform::from_xyz(SCREEN_WIDTH as f32 / 2.0, SCREEN_HEIGHT as f32 / 2.0, 0.0),
         Material::new(crosshair_handle, TexturePixelFormat::Psm8888, true),
         HudElement,
     ));
+
+    // Debug overlay: a single small (native 8px) Text in the top-left whose
+    // content is rewritten every frame by `update_debug_overlay`. Green tint so
+    // it reads over the mostly-dark 3D scene.
+    world.spawn((
+        Text::new("", font_handle)
+            .at(4.0, 4.0)
+            .scale(1.0)
+            .color(0xFF00FF00),
+        DebugOverlay,
+    ));
+}
+
+#[derive(component::Component)]
+struct DebugOverlay;
+
+/// Edge-detected button toggle for the whole debug view (text overlay + collider
+/// wireframes). Press SELECT to flip it. `Local<bool>` remembers last frame's
+/// button state so holding the button toggles only once.
+///
+/// To use a combo instead, require multiple buttons, e.g.:
+/// `let pressed = b.contains(CtrlButtons::SELECT) && b.contains(CtrlButtons::LTRIGGER);`
+fn toggle_debug(
+    controller: Res<Controller>,
+    mut debug: ResMut<RenderDebug>,
+    mut was_pressed: Local<bool>,
+) {
+    let pressed = controller.buttons.contains(CtrlButtons::SELECT);
+    if pressed && !*was_pressed {
+        debug.0 = !debug.0;
+    }
+    *was_pressed = pressed;
+}
+
+/// Rewrites the debug overlay text each frame with frame timing and player state.
+/// When the debug view is off, the overlay is cleared so it draws nothing.
+fn update_debug_overlay(
+    mut text: Single<&mut Text, With<DebugOverlay>>,
+    time: Res<Time>,
+    debug: Res<RenderDebug>,
+    player: Single<(&Transform, &RigidBody), With<Player>>,
+) {
+    if !debug.0 {
+        text.content.clear();
+        return;
+    }
+
+    let (transform, body) = player.into_inner();
+
+    // delta is clamped to >= 1/30s in update_time, so FPS reads at most ~30 even
+    // if the frame was faster — good enough as a coarse health indicator.
+    let dt = time.delta_seconds();
+    let fps = if dt > 0.0 { 1.0 / dt } else { 0.0 };
+
+    let p = &transform.translation;
+    let v = &body.velocity;
+
+    text.content = format!(
+        "FPS {:>5.1}  DT {:>5.1}ms\nPOS {:>7.2} {:>7.2} {:>7.2}\nVEL {:>7.2} {:>7.2} {:>7.2}",
+        fps,
+        dt * 1000.0,
+        p.x,
+        p.y,
+        p.z,
+        v.x,
+        v.y,
+        v.z,
+    );
 }
 
 #[derive(Clone, Component)]
@@ -276,12 +362,6 @@ fn move_chicken(mut transform: Single<(&mut Transform), With<ChickenTag>>, time:
 fn setup_world(world: &mut World) {
     let mut asset_server = world.resource_mut::<AssetServer>();
 
-    // let font_path = "ms0:/psp/game/cat_dev/eso/assets/default_font.png";
-    let font_path = "./assets/default_font.png";
-    let font = Texture::new(font_path, false);
-    let font_handle = asset_server
-        .add(font)
-        .expect(format!("Could not add image: {}", font_path).as_str());
 
     // let brick_path = "ms0:/psp/game/cat_dev/eso/assets/cell_brick.png";
     let brick_path = "./assets/cell_brick.png";
@@ -301,7 +381,14 @@ fn setup_world(world: &mut World) {
         .expect(format!("Could not add image: {}", chicken_texture_path).as_str());
 
     // Spawn components and entities
-    world.spawn((Player, Transform::default(), Collider::aabb(0.5, 1.0, 0.5)));
+    world.spawn((
+        Player,
+        // Spawn a few units above the floor so the player falls and lands on it,
+        // rather than starting overlapping/inside the floor collider.
+        Transform::from_xyz(0.0, 5.0, 0.0),
+        Collider::cuboid(0.5, 1.0, 0.5),
+        RigidBody::default(),
+    ));
 
     // Spawn chicken
     world.spawn_batch(vec![(
@@ -312,13 +399,6 @@ fn setup_world(world: &mut World) {
         ChickenTag,
     )]);
 
-    world.spawn((
-        Mesh::plane(3.0, 3.0),
-        Transform::from_xyz(-1.0, 1.0, -1.0).with_rotation(0.0, PI / 2.0, 0.0),
-        Material::new(font_handle, TexturePixelFormat::Psm8888, true),
-        WorldElement,
-    ));
-
     // Spawn world objects
     world.spawn_batch(vec![
         (
@@ -326,22 +406,33 @@ fn setup_world(world: &mut World) {
             Transform::from_xyz(0.0, 0.0, -2.0),
             Material::new(brick_handle.clone(), TexturePixelFormat::Psm8888, false),
             WorldElement,
-            Collider::aabb(1.0, 1.0, 1.0).fixed(),
+            Collider::cuboid(1.0, 1.0, 1.0),
+            StaticBody,
         ),
         (
             Mesh::cuboid(0.5, 2.0, 3.0),
             Transform::from_xyz(3.0, 0.5, -2.0).with_rotation(0.0, PI / 2.0, 0.0),
             Material::new(brick_handle.clone(), TexturePixelFormat::Psm8888, false),
             WorldElement,
-            Collider::aabb(3.0, 2.0, 0.5).fixed(), // not dynamic
+            Collider::cuboid(0.5, 2.0, 3.0),
+            StaticBody, // not dynamic
         ),
         (
             Mesh::subdivided_plane(10.0, 10.0, 2, 2),
             Transform::from_xyz(0.0, -0.5, 0.0).with_rotation(-PI / 2.0, 0.0, 0.0),
             Material::new(brick_handle.clone(), TexturePixelFormat::Psm8888, false),
             WorldElement,
-            Collider::aabb(10.0, 0.0, 10.0).fixed(),
+            Collider::cuboid(10.0, 10.0, 0.1),
+            StaticBody,
         ),
+        (
+            Mesh::cuboid(2.0, 2.0, 0.5),
+            Transform::from_xyz(-1.0, 0.0, 0.0).with_rotation(-0.5, 0.0, 0.0),
+            Material::new(brick_handle.clone(), TexturePixelFormat::Psm8888, false),
+            WorldElement,
+            Collider::cuboid(2.0, 2.0, 0.5),
+            StaticBody,
+            ),
     ]);
 }
 
@@ -349,14 +440,17 @@ unsafe fn psp_main_inner() {
     // Create world and resources
     let mut world = World::new();
     let mut renderer = Renderer::new(&mut world);
-    let mut physics = PhysicsEngine::new(&mut world);
 
     Renderer::init();
-    Renderer::set_debug(&mut world, true);
+    // Start with the debug view hidden; press SELECT in-game to toggle it on.
+    Renderer::set_debug(&mut world, false);
 
     world.insert_resource(Time::default());
     world.insert_resource(Controller::default());
     world.insert_resource(AssetServer::default());
+
+    // Static collision data (updated each frame before player_physics)
+    world.insert_resource(StaticColliderData::default());
 
     // Create schedule
     let mut startup_schedule = Schedule::default();
@@ -371,7 +465,11 @@ unsafe fn psp_main_inner() {
         update_time,
         update_controls,
         update_player.after(update_controls),
+        toggle_debug.after(update_controls),
         move_chicken,
+        collect_static_data.before(player_physics),
+        player_physics,
+        update_debug_overlay.after(player_physics),
     ));
 
     // Run startup functions
@@ -381,8 +479,6 @@ unsafe fn psp_main_inner() {
     loop {
         // This updates game logic
         update_schedule.run(&mut world);
-
-        physics.run(&mut world);
 
         renderer.run(&mut world);
     }
