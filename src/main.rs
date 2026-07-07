@@ -45,7 +45,7 @@ use crate::asset_handling::server::AssetServer;
 use crate::asset_handling::texture::Texture;
 use crate::asset_handling::{Material, Mesh, Vertex};
 use crate::physics::{
-    collect_static_data, player_physics, Collider, RigidBody, StaticBody, StaticColliderData,
+    Collider, RigidBody, StaticBody, StaticColliderData, collect_static_data, player_physics,
 };
 use crate::render::*;
 use crate::text::Text;
@@ -53,7 +53,7 @@ use crate::text::Text;
 psp::module!("ESO", 1, 1);
 
 // Game constants
-const PLAYER_SPEED: f32 = 2.5;
+const PLAYER_SPEED: f32 = 2.0;
 const CAMERA_ROTATION_SPEED: f32 = PI;
 
 #[derive(Debug, Clone, component::Component)]
@@ -219,9 +219,27 @@ fn update_player(
         // Stick x controls horizontal camera movement
         transform.rotation.y += sx * CAMERA_ROTATION_SPEED * dt;
 
-        // Camera exponential decay back to zero
-        let decay = 8.0;
-        transform.rotation.x *= 1.0 - (decay * dt).min(1.0);
+        // Camera pitch target: when walking on a walkable slope, gently pan the
+        // camera to match the terrain ahead. The rise of the ground plane per unit
+        // travelled along the camera-forward direction (sin(yaw), 0, -cos(yaw)) is
+        //   rise = -(n·f) / n.y
+        // and the matching view angle is atan(rise). Positive rotation.x looks
+        // DOWN in the view matrix, so the target is negated (uphill → look up).
+        // When airborne or standing still the target falls back to level (0).
+        const SLOPE_PAN_DEADZONE: f32 = 0.2;
+        let target_pitch = if body.grounded && sy.abs() > SLOPE_PAN_DEADZONE {
+            let n = body.ground_normal;
+            let rise = -(n.x * sin - n.z * cos) / n.y;
+            -psp_math::vfpu_atanf(rise)
+        } else {
+            0.0
+        };
+
+        // Exponential approach toward the target. Slower than the old
+        // return-to-zero decay (8.0) so slope adaptation reads as a smooth pan
+        // rather than a snap.
+        let pan_speed = 3.0;
+        transform.rotation.x += (target_pitch - transform.rotation.x) * (pan_speed * dt).min(1.0);
     }
 
     //================= This is like constraints and junk
@@ -239,6 +257,43 @@ fn update_player(
     if transform.rotation.y < -PI {
         transform.rotation.y += 2.0 * PI
     }
+}
+
+/// Advances the head-bob walk cycle while the player is grounded and moving.
+/// The phase rate scales with actual (post-collision) horizontal speed, so the
+/// bob slows/stops when pressed against a wall; the intensity envelope eases in
+/// and out so starting/stopping doesn't pop.
+fn update_camera_bob(
+    mut bob: ResMut<CameraBob>,
+    player: Single<&RigidBody, With<Player>>,
+    time: Res<Time>,
+) {
+    // Radians of walk-cycle phase per unit of horizontal distance travelled.
+    const BOB_CYCLE_RATE: f32 = 5.0;
+    // Envelope ease-in/out speed.
+    const BOB_EASE: f32 = 6.0;
+
+    let dt = time.delta_seconds();
+    let body = player.into_inner();
+
+    let v = body.velocity;
+    let speed = psp_math::vlength(ScePspFVector3 {
+        x: v.x,
+        y: 0.0,
+        z: v.z,
+    });
+    let moving = body.grounded && speed > 0.15;
+
+    if moving {
+        bob.phase += speed * BOB_CYCLE_RATE * dt;
+        // Keep the phase bounded so precision never degrades over long play.
+        if bob.phase > 2.0 * PI {
+            bob.phase -= 2.0 * PI;
+        }
+    }
+
+    let target = if moving { 1.0 } else { 0.0 };
+    bob.amount += (target - bob.amount) * (BOB_EASE * dt).min(1.0);
 }
 
 #[derive(component::Component)]
@@ -328,8 +383,16 @@ fn update_debug_overlay(
     let p = &transform.translation;
     let v = &body.velocity;
 
+    let state = if body.grounded {
+        "GROUND"
+    } else if body.on_steep {
+        "STEEP"
+    } else {
+        "AIR"
+    };
+
     text.content = format!(
-        "FPS {:>5.1}  DT {:>5.1}ms\nPOS {:>7.2} {:>7.2} {:>7.2}\nVEL {:>7.2} {:>7.2} {:>7.2}",
+        "FPS {:>5.1}  DT {:>5.1}ms\nPOS {:>7.2} {:>7.2} {:>7.2}\nVEL {:>7.2} {:>7.2} {:>7.2}\nSTATE {}",
         fps,
         dt * 1000.0,
         p.x,
@@ -338,6 +401,7 @@ fn update_debug_overlay(
         v.x,
         v.y,
         v.z,
+        state,
     );
 }
 
@@ -362,7 +426,6 @@ fn move_chicken(mut transform: Single<(&mut Transform), With<ChickenTag>>, time:
 fn setup_world(world: &mut World) {
     let mut asset_server = world.resource_mut::<AssetServer>();
 
-
     // let brick_path = "ms0:/psp/game/cat_dev/eso/assets/cell_brick.png";
     let brick_path = "./assets/cell_brick.png";
     let image = Texture::new(brick_path, true);
@@ -386,53 +449,81 @@ fn setup_world(world: &mut World) {
         // Spawn a few units above the floor so the player falls and lands on it,
         // rather than starting overlapping/inside the floor collider.
         Transform::from_xyz(0.0, 5.0, 0.0),
-        Collider::cuboid(0.5, 1.0, 0.5),
+        // Capsule (not a box) so GJK/EPA reports the TRUE surface normal on
+        // slopes. A box collider only ever yields axis-aligned face normals, which
+        // makes steep ramps read as flat ground and lets the player climb them.
+        // radius 0.25, half_height 0.25 → ~0.5 wide, 1.0 tall (matches old box).
+        Collider::capsule(0.25, 0.25),
         RigidBody::default(),
     ));
 
-    // Spawn chicken
+    // Spawn chicken — parked out in the open in front of the spawn, clear of the
+    // ramp test area. (move_chicken overrides its Y each frame to bob.)
     world.spawn_batch(vec![(
         Mesh::from_handle(&chicken_handle).expect("Mesh not loaded"),
-        Transform::from_xyz(0.0, 0.0, 0.0),
+        Transform::from_xyz(0.0, 0.0, 6.0),
         Material::new(chicken_texhandle.clone(), TexturePixelFormat::Psm8888, true),
         WorldElement,
         ChickenTag,
     )]);
 
-    // Spawn world objects
+    // ================= Debug test scene =================
+    // Layout (top-down, +X right, +Z toward the chicken/front):
+    //
+    //             [back wall  z = -7]
+    //    45°  25° |             | 60°  75°
+    //  (-7.5)(-2.5|   spawn(0)  |(+2.5)(+7.5)   ramps centered at z = -2
+    //            |  cube(z=3)   |
+    //            | chicken(z=6) |
+    //
+    // Walkable ramps (angle < 50° limit) on the LEFT should be climbable; steep
+    // ramps (> 50°) on the RIGHT act like walls and slide the player back down.
+    // Each ramp is a thin slab tilted about X and centered on the floor plane, so
+    // its sloped top face emerges from the floor at ground level (zero step to walk
+    // onto, and never floating). The face rises toward the spawn — walk into it.
+    let ramp_mesh = |angle: f32, x: f32| {
+        (
+            Mesh::cuboid(3.0, 0.4, 6.0),
+            Transform::from_xyz(x, -0.45, -2.0).with_rotation(angle, 0.0, 0.0),
+            Material::new(brick_handle.clone(), TexturePixelFormat::Psm8888, false),
+            WorldElement,
+            Collider::cuboid(3.0, 0.4, 6.0),
+            StaticBody,
+        )
+    };
+
     world.spawn_batch(vec![
+        // --- Flat floor: 20x20, top surface at y = -0.45 ---
+        (
+            Mesh::subdivided_plane(20.0, 20.0, 4, 4),
+            Transform::from_xyz(0.0, -0.5, 0.0).with_rotation(-PI / 2.0, 0.0, 0.0),
+            Material::new(brick_handle.clone(), TexturePixelFormat::Psm8888, false),
+            WorldElement,
+            Collider::cuboid(20.0, 20.0, 0.1),
+            StaticBody,
+        ),
+        ramp_mesh(0.436, -2.5), // ~25° walkable (cos ≈ 0.906)
+        ramp_mesh(0.785, -7.5), // ~45° walkable (cos ≈ 0.707), near the limit
+        ramp_mesh(1.047, 2.5),  // ~60° steep    (cos ≈ 0.5),   slides down
+        ramp_mesh(1.309, 7.5),  // ~75° steep    (cos ≈ 0.259), nearly a wall
+        // --- Vertical back wall: blocks movement, no climb ---
+        (
+            Mesh::cuboid(8.0, 3.0, 0.5),
+            Transform::from_xyz(0.0, 1.0, -7.0),
+            Material::new(brick_handle.clone(), TexturePixelFormat::Psm8888, false),
+            WorldElement,
+            Collider::cuboid(8.0, 3.0, 0.5),
+            StaticBody,
+        ),
+        // --- Reference cube: a solid box to walk up against / stand on ---
         (
             Mesh::cube_indexed(1.0),
-            Transform::from_xyz(0.0, 0.0, -2.0),
+            Transform::from_xyz(0.0, 0.0, 3.0),
             Material::new(brick_handle.clone(), TexturePixelFormat::Psm8888, false),
             WorldElement,
             Collider::cuboid(1.0, 1.0, 1.0),
             StaticBody,
         ),
-        (
-            Mesh::cuboid(0.5, 2.0, 3.0),
-            Transform::from_xyz(3.0, 0.5, -2.0).with_rotation(0.0, PI / 2.0, 0.0),
-            Material::new(brick_handle.clone(), TexturePixelFormat::Psm8888, false),
-            WorldElement,
-            Collider::cuboid(0.5, 2.0, 3.0),
-            StaticBody, // not dynamic
-        ),
-        (
-            Mesh::subdivided_plane(10.0, 10.0, 2, 2),
-            Transform::from_xyz(0.0, -0.5, 0.0).with_rotation(-PI / 2.0, 0.0, 0.0),
-            Material::new(brick_handle.clone(), TexturePixelFormat::Psm8888, false),
-            WorldElement,
-            Collider::cuboid(10.0, 10.0, 0.1),
-            StaticBody,
-        ),
-        (
-            Mesh::cuboid(2.0, 2.0, 0.5),
-            Transform::from_xyz(-1.0, 0.0, 0.0).with_rotation(-0.5, 0.0, 0.0),
-            Material::new(brick_handle.clone(), TexturePixelFormat::Psm8888, false),
-            WorldElement,
-            Collider::cuboid(2.0, 2.0, 0.5),
-            StaticBody,
-            ),
     ]);
 }
 
@@ -469,6 +560,7 @@ unsafe fn psp_main_inner() {
         move_chicken,
         collect_static_data.before(player_physics),
         player_physics,
+        update_camera_bob.after(player_physics),
         update_debug_overlay.after(player_physics),
     ));
 

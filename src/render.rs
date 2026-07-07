@@ -49,6 +49,7 @@ impl Renderer {
         unsafe {
             let mut schedule = Schedule::default();
             world.insert_resource(RenderDebug(false));
+            world.insert_resource(CameraBob::default());
             schedule.add_systems(((
                 setup_gu,
                 clear_screen,
@@ -343,8 +344,19 @@ fn lerp_vertex(v0: &Vertex, v1: &Vertex, t: f32) -> Vertex {
     }
 }
 
+/// View-bob state, advanced by `update_camera_bob` while the player walks and
+/// consumed here at render time. Purely cosmetic: the offsets are applied to the
+/// view matrix only, never to the player's Transform, so physics is unaffected.
+#[derive(Resource, Default)]
+pub struct CameraBob {
+    /// Walk-cycle phase in radians; advances with horizontal speed.
+    pub phase: f32,
+    /// Intensity envelope 0..1; ramps up when moving, decays when idle/airborne.
+    pub amount: f32,
+}
+
 /// Have to "render" (change camera position) here since physics and updates are applied before
-fn render_camera(mut transform: Single<&mut Transform, With<Player>>) {
+fn render_camera(mut transform: Single<&mut Transform, With<Player>>, bob: Res<CameraBob>) {
     unsafe {
         // set Gu Matrix mode to edit the View
         sys::sceGumMatrixMode(sys::MatrixMode::View);
@@ -358,12 +370,19 @@ fn render_camera(mut transform: Single<&mut Transform, With<Player>>) {
             psp_math::vfpu_sinf(clamped) * limit
         };
 
+        // Head-bob offsets. Vertical bounce runs at twice the walk-cycle phase
+        // (two footfalls per cycle); a slight roll sways once per cycle.
+        const BOB_HEIGHT: f32 = 0.02;
+        const BOB_ROLL: f32 = 0.0035;
+        let bob_y = psp_math::vfpu_sinf(bob.phase * 2.0) * BOB_HEIGHT * bob.amount;
+        let bob_roll = psp_math::vfpu_sinf(bob.phase) * BOB_ROLL * bob.amount;
+
         // Define display rotation vector
         const PITCH_CLAMP_DEG: f32 = 90.0; // in degrees
         let display_rotation = ScePspFVector3 {
             x: smooth_pitch(transform.rotation.x, (PITCH_CLAMP_DEG / 2.0).to_radians()),
             y: transform.rotation.y,
-            z: transform.rotation.z,
+            z: transform.rotation.z + bob_roll,
         };
 
         // Apply rotation (yaw then pitch)
@@ -373,7 +392,7 @@ fn render_camera(mut transform: Single<&mut Transform, With<Player>>) {
         // This is because We want everything to move in the opposite direction of the camera
         let t = ScePspFVector3 {
             x: -transform.translation.x,
-            y: -transform.translation.y,
+            y: -(transform.translation.y + bob_y),
             z: -transform.translation.z,
         };
 

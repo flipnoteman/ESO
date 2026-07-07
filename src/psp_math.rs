@@ -285,6 +285,37 @@ pub fn vfpu_sinf(x: f32) -> f32 {
     ret_val
 }
 
+/// Calculate the arctangent of x (radians) using the psp VFPU.
+///
+/// The VFPU has no direct atan instruction, so this uses the identity
+/// atan(x) = asin(x / sqrt(1 + x²)). `vasin.s` returns the arcsine scaled to
+/// units of π/2, so the result is multiplied back up by VFPU_PI_2 to get radians.
+pub fn vfpu_atanf(x: f32) -> f32 {
+    let mut ret_val = 0.0;
+    unsafe {
+        psp::vfpu_asm!(
+            "mtv    {x}, S000",
+            // 1 + x²
+            "vmul.s S001, S000, S000",
+            "vone.s S002",
+            "vadd.s S001, S001, S002",
+            // x / sqrt(1 + x²)  ∈ (-1, 1)
+            "vrsq.s S001, S001",
+            "vmul.s S000, S000, S001",
+            // asin, scaled from [-1,1] (units of π/2) back to radians
+            "vasin.s S000, S000",
+            "vcst.s S001, VFPU_PI_2",
+            "vmul.s S000, S000, S001",
+            "mfv    {ret}, S000",
+
+            x = inout(reg) x => _,
+            ret = out(reg) ret_val,
+            options(nostack, nomem),
+        );
+    }
+    ret_val
+}
+
 pub fn vfpu_tanf(x: f32) -> f32 {
     let mut ret_val = 0.0;
     unsafe {

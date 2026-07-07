@@ -243,9 +243,23 @@ fn do_line(simplex: &mut Simplex, dir: &mut ScePspFVector3) -> bool {
             // Origin is on the line AB — pick any direction perpendicular to AB
             let (dx, dy, dz) = (ab.x, ab.y, ab.z);
             if dx.abs() > dy.abs() && dx.abs() > dz.abs() {
-                *dir = vcross(ab, ScePspFVector3 { x: 0.0, y: 1.0, z: 0.0 });
+                *dir = vcross(
+                    ab,
+                    ScePspFVector3 {
+                        x: 0.0,
+                        y: 1.0,
+                        z: 0.0,
+                    },
+                );
             } else {
-                *dir = vcross(ab, ScePspFVector3 { x: 1.0, y: 0.0, z: 0.0 });
+                *dir = vcross(
+                    ab,
+                    ScePspFVector3 {
+                        x: 1.0,
+                        y: 0.0,
+                        z: 0.0,
+                    },
+                );
             }
         }
     } else {
@@ -341,10 +355,7 @@ fn do_tetrahedron(simplex: &mut Simplex, dir: &mut ScePspFVector3) -> bool {
     let adb = vcross(ad, ab);
 
     // If all face normals are zero, the tetrahedron is degenerate (flat/coplanar)
-    if vdot(abc, abc) < 1e-10
-        && vdot(acd, acd) < 1e-10
-        && vdot(adb, adb) < 1e-10
-    {
+    if vdot(abc, abc) < 1e-10 && vdot(acd, acd) < 1e-10 && vdot(adb, adb) < 1e-10 {
         // Can't determine containment — let GJK try a different direction
         *dir = ao;
         return false;
@@ -539,6 +550,16 @@ pub struct RigidBody {
     pub gravity: f32,
     pub velocity: ScePspFVector3,
     pub mass: f32,
+    /// True when resting on a slope shallow enough to stand on. Input is redirected
+    /// along the ground plane and fall speed is cleared so there's no creep.
+    pub grounded: bool,
+    /// True when touching a too-steep surface (and not grounded). Input is glued to
+    /// the slope and stripped of any uphill component so the player can only slide.
+    pub on_steep: bool,
+    /// Separation normal of the surface we're standing on / sliding against. Kept
+    /// from the previous frame so this frame's input can be projected onto it,
+    /// keeping the player's velocity parallel to the surface.
+    pub ground_normal: ScePspFVector3,
 }
 
 impl Default for RigidBody {
@@ -551,6 +572,13 @@ impl Default for RigidBody {
                 z: 0.0,
             },
             mass: 10.0,
+            grounded: false,
+            on_steep: false,
+            ground_normal: ScePspFVector3 {
+                x: 0.0,
+                y: 1.0,
+                z: 0.0,
+            },
         }
     }
 }
@@ -613,34 +641,52 @@ pub fn player_physics(
     // landing exactly on the surface and re-triggering a collision next frame.
     const SKIN: f32 = 0.001;
     const TERMINAL_VELOCITY: f32 = 30.0;
+    // Steepest slope the player can stand/walk on. A contact whose separation
+    // normal points more vertically than this counts as walkable ground; anything
+    // steeper is treated as a slide surface. cos(50°) ≈ 0.643.
+    const MIN_WALKABLE_NORMAL_Y: f32 = 0.643;
+    // Max speed while sliding down a too-steep surface. Without this, gravity keeps
+    // accumulating in the projected slide velocity and the player speeds up the
+    // longer they touch the slope — which read as "velocity increases against the
+    // overhang". Capping gives a steady, controlled slide instead.
+    const STEEP_SLIDE_SPEED: f32 = 2.5;
 
-    // Integrate gravity, clamped to terminal velocity.
+    // Integrate gravity, clamped to terminal velocity. If we were grounded last
+    // frame, velocity.y was cleared then, so this is a single small step that acts
+    // as the "probe" that keeps us touching the ground.
     body.velocity.y -= body.gravity * dt;
     if body.velocity.y < -TERMINAL_VELOCITY {
         body.velocity.y = -TERMINAL_VELOCITY;
     }
 
-    let player_rot = transform.rotation;
-    let mut pos = transform.translation;
-    // Full desired displacement for this frame (VFPU scalar multiply).
-    let mut remaining = vscale(body.velocity, dt);
+    // Use only the yaw for collision. transform.rotation also carries the camera
+    // pitch (look up/down), and feeding that into the collider would tilt the
+    // player's capsule so its contact normals no longer reflect the true surface
+    // it's standing on — breaking slope classification. The capsule is
+    // rotationally symmetric about Y, so yaw doesn't matter either, but keeping it
+    // costs nothing and stays correct if the shape ever changes.
+    let player_rot = ScePspFVector3 {
+        x: 0.0,
+        y: transform.rotation.y,
+        z: 0.0,
+    };
 
-    for _ in 0..4 {
-        if vdot(remaining, remaining) < 1e-10 {
-            break;
-        }
-
-        // Candidate = where we want to move (may penetrate a collider).
-        let candidate = vadd(pos, remaining);
+    // Contacts for the player at a candidate position, as (separation_normal,
+    // depth) pairs — normals negated from EPA's outward normal so they point the
+    // direction the player must be pushed. Returns BOTH the deepest contact overall
+    // and the deepest *walkable* one: with only the single deepest, a player wedged
+    // between the floor and an overhang sees only the overhang, reads as airborne,
+    // and gravity accumulates forever (the "speed grows on overhangs" bug).
+    type Contact = (ScePspFVector3, f32);
+    let find_contacts = |candidate: ScePspFVector3| -> (Option<Contact>, Option<Contact>) {
         let candidate_transform = Transform {
             translation: candidate,
             rotation: player_rot,
         };
-
-        let mut hit = false;
-        let mut hit_normal = ScePspFVector3 { x: 0.0, y: 0.0, z: 0.0 };
+        let mut best: Option<Contact> = None;
+        let mut best_walkable: Option<Contact> = None;
         let mut max_depth = 0.0f32;
-
+        let mut max_walk_depth = 0.0f32;
         for i in 0..collision_data.transforms.len() {
             if let Some(mut simplex) = gjk(
                 &player_collider.collider_type,
@@ -655,42 +701,236 @@ pub fn player_physics(
                     &collision_data.colliders[i].collider_type,
                     &collision_data.transforms[i],
                 ) {
+                    let n = vneg(r.normal);
                     if r.depth > max_depth {
-                        hit = true;
                         max_depth = r.depth;
-                        // EPA returns the closest-face normal pointing OUTWARD from
-                        // the origin of the Minkowski difference M = A - B (A = player).
-                        // That outward normal points from the player toward the
-                        // surface; to separate, the player must move the opposite way,
-                        // so negate it into a push/separation normal. The depenetration,
-                        // slide, and velocity-cancel steps below all assume hit_normal
-                        // points the direction the player should be pushed.
-                        hit_normal = vneg(r.normal);
+                        best = Some((n, r.depth));
+                    }
+                    if n.y >= MIN_WALKABLE_NORMAL_Y && r.depth > max_walk_depth {
+                        max_walk_depth = r.depth;
+                        best_walkable = Some((n, r.depth));
                     }
                 }
             }
         }
+        (best, best_walkable)
+    };
 
-        if hit {
-            // Depenetrate FROM the penetrating candidate position.
-            // Previous code did `pos += normal * depth`, which pushed from the
-            // pre-movement position and caused the player to float above surfaces
-            // by exactly one frame's worth of gravity each frame.
-            pos = vadd(candidate, vscale(hit_normal, max_depth + SKIN));
+    // The horizontal movement the player is asking for this frame (update_player
+    // wrote it into velocity.x/z).
+    let input = ScePspFVector3 {
+        x: body.velocity.x,
+        y: 0.0,
+        z: body.velocity.z,
+    };
 
-            // Project remaining movement onto the collision plane (slide).
-            let dot_r = vdot(remaining, hit_normal);
-            remaining = vsub(remaining, vscale(hit_normal, dot_r));
+    // Compose the single velocity vector we actually integrate this frame, using
+    // the surface we were touching last frame so movement stays parallel to it.
+    let mut vel;
+    if body.grounded && body.ground_normal.y >= MIN_WALKABLE_NORMAL_Y {
+        // Walkable ground: map input onto the ground plane VERTICALLY — keep x/z
+        // exactly as requested and pick the y that lies on the plane
+        // (n·v = 0  →  y = -(n.x·x + n.z·z)/n.y). Horizontal speed is preserved
+        // with no renormalization, and a zero input maps to exactly zero motion,
+        // so there is no downhill creep while standing still. Then re-add the
+        // one-frame gravity probe so we settle back onto the surface.
+        let gn = body.ground_normal;
+        vel = ScePspFVector3 {
+            x: input.x,
+            y: -(gn.x * input.x + gn.z * input.z) / gn.y + body.velocity.y,
+            z: input.z,
+        };
+    } else if body.on_steep {
+        // Glued to a too-steep surface. Remove the horizontal component of the
+        // velocity toward OR away from the surface: toward would climb (the wall
+        // clip in the loop would fight it), away would peel the player off the
+        // slope mid-slide. What survives is sideways input plus gravity; the
+        // contact clip in the loop turns the gravity into a down-slope slide.
+        // NOTE: do NOT project onto the tilted slope plane here — that converts
+        // horizontal approach into up-slope motion (the climb/jitter bug).
+        let gn = body.ground_normal;
+        let mut v = body.velocity;
+        let wl = vlength(ScePspFVector3 {
+            x: gn.x,
+            y: 0.0,
+            z: gn.z,
+        });
+        if wl > 1e-5 {
+            let w = ScePspFVector3 {
+                x: gn.x / wl,
+                y: 0.0,
+                z: gn.z / wl,
+            };
+            let c = vdot(v, w);
+            v = vsub(v, vscale(w, c));
+        }
+        vel = v;
+    } else {
+        // Airborne: input + gravity, unconstrained.
+        vel = body.velocity;
+    }
 
-            // Kill the velocity component that was driving into the surface so
-            // gravity doesn't re-accumulate penetration depth next frame.
-            let dot_v = vdot(body.velocity, hit_normal);
-            if dot_v < 0.0 {
-                body.velocity = vsub(body.velocity, vscale(hit_normal, dot_v));
-            }
-        } else {
-            pos = candidate;
+    // === Collide and slide (single velocity vector) ===
+    // Projecting one vector onto each contact plane can only remove speed, never
+    // add or rotate it — this is what makes angled wall hits slow the player down
+    // correctly and keeps the velocity parallel to whatever it's sliding on.
+    // Apply the frame's movement ONCE, then iterate pure depenetration from the
+    // resulting position. The previous structure re-applied the clipped move on
+    // every loop iteration, so a frame that touched a wall moved the tangential
+    // component up to twice — a speed BOOST while hugging any wall (even 90°),
+    // flickering on and off with contact detection, which also read as camera
+    // jumps. Depenetration alone produces the slide: it removes exactly the
+    // into-surface component of the already-applied move and nothing else.
+    let mut pos = vadd(transform.translation, vscale(vel, dt));
+    let mut grounded = false;
+    let mut on_steep = false;
+    let mut surface_normal = ScePspFVector3 {
+        x: 0.0,
+        y: 1.0,
+        z: 0.0,
+    };
+
+    for _ in 0..4 {
+        let (contact, walkable_contact) = find_contacts(pos);
+        let Some((n, depth)) = contact else {
             break;
+        };
+
+        if n.y >= MIN_WALKABLE_NORMAL_Y {
+            // Walkable ground: resolve straight UP, not along the tilted normal
+            // (slanted depenetration converts vertical penetration into horizontal
+            // drift — the old "slides down shallow ramps" bug). Re-map the stored
+            // velocity onto the plane vertically (keep x/z, solve y).
+            grounded = true;
+            surface_normal = n;
+            pos.y += (depth + SKIN) / n.y;
+            vel = ScePspFVector3 {
+                x: vel.x,
+                y: -(n.x * vel.x + n.z * vel.z) / n.y,
+                z: vel.z,
+            };
+        } else {
+            // Non-walkable surface (steep slope, wall, or overhang). Treat it as a
+            // WALL: depenetrate HORIZONTALLY and clip the velocity against the
+            // horizontal part of the normal. Depenetrating along the tilted normal
+            // converts horizontal approach into up-the-slope displacement (climb +
+            // jitter) and vertical pumping under overhangs. Horizontal resolution
+            // never lifts or sinks the player.
+            if n.y > 0.0 {
+                on_steep = true;
+                surface_normal = n;
+            }
+            let wl = vlength(ScePspFVector3 {
+                x: n.x,
+                y: 0.0,
+                z: n.z,
+            });
+            if wl > 0.3 {
+                let w = ScePspFVector3 {
+                    x: n.x / wl,
+                    y: 0.0,
+                    z: n.z / wl,
+                };
+                // Moving depth/wl along w removes `depth` of penetration along n
+                // (w·n = wl).
+                pos = vadd(pos, vscale(w, depth / wl + SKIN));
+                let wv = vdot(vel, w);
+                if wv < 0.0 {
+                    vel = vsub(vel, vscale(w, wv));
+                }
+            } else {
+                // Nearly-flat ceiling: no horizontal direction to resolve along,
+                // push along the true normal.
+                pos = vadd(pos, vscale(n, depth + SKIN));
+            }
+        }
+
+        // Cancel the into-surface velocity component so it doesn't re-penetrate
+        // next frame.
+        let dot_v = vdot(vel, n);
+        if dot_v < 0.0 {
+            vel = vsub(vel, vscale(n, dot_v));
+        }
+
+        // If a walkable surface was also penetrated this iteration (wedged against
+        // a wall/overhang while standing on the floor), don't lose the grounding —
+        // otherwise the frame reads as airborne and gravity accumulates unbounded.
+        if let Some((wn, _)) = walkable_contact {
+            if !grounded {
+                grounded = true;
+                surface_normal = wn;
+            }
+        }
+    }
+
+    // Surface snap. After sliding, the player rests ~SKIN above the surface, so a
+    // purely parallel move next frame penetrates nothing and the contact vanishes —
+    // the player flickers to "air" every other frame, which lets them climb slopes
+    // and makes velocity jitter. If we didn't resolve a contact this frame, probe a
+    // short distance downward and, if a surface is there, snap onto it and adopt its
+    // state so ground/steep contact stays stable frame to frame.
+    if !grounded && !on_steep {
+        const SNAP: f32 = 0.12;
+        let probe = ScePspFVector3 {
+            x: pos.x,
+            y: pos.y - SNAP,
+            z: pos.z,
+        };
+        let (contact, walkable_contact) = find_contacts(probe);
+        // Prefer the walkable contact even when something else (e.g. an overhang
+        // above) penetrates deeper — the floor is what should ground us.
+        if let Some((n, depth)) = walkable_contact {
+            grounded = true;
+            surface_normal = n;
+            pos = ScePspFVector3 {
+                x: pos.x,
+                y: probe.y + (depth + SKIN) / n.y,
+                z: pos.z,
+            };
+        } else if let Some((n, depth)) = contact {
+            if n.y > 0.0 {
+                on_steep = true;
+                surface_normal = n;
+                // Resolve horizontally, like the main loop — pushing along the
+                // tilted normal would lift the player off the slope again.
+                let wl = vlength(ScePspFVector3 {
+                    x: n.x,
+                    y: 0.0,
+                    z: n.z,
+                });
+                if wl > 0.3 {
+                    let w = ScePspFVector3 {
+                        x: n.x / wl,
+                        y: 0.0,
+                        z: n.z / wl,
+                    };
+                    pos = vadd(probe, vscale(w, depth / wl + SKIN));
+                } else {
+                    pos = vadd(probe, vscale(n, depth + SKIN));
+                }
+            }
+        }
+    }
+
+    // Persist surface state for next frame's input projection. Grounded wins over
+    // steep when both are touched (e.g. at the foot of a ramp).
+    body.grounded = grounded;
+    body.on_steep = on_steep && !grounded;
+    if grounded || on_steep {
+        body.ground_normal = surface_normal;
+    }
+
+    // Store the resolved (surface-parallel) velocity so the debug HUD and next
+    // frame see it. On walkable ground, clear the vertical component so gravity
+    // doesn't accumulate into a downhill slide. On a steep surface, cap the slide
+    // speed so it stays steady instead of accelerating the whole time we touch it.
+    body.velocity = vel;
+    if body.grounded {
+        body.velocity.y = 0.0;
+    } else if body.on_steep {
+        let s = vlength(body.velocity);
+        if s > STEEP_SLIDE_SPEED {
+            body.velocity = vscale(body.velocity, STEEP_SLIDE_SPEED / s);
         }
     }
 
